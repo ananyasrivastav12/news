@@ -1,0 +1,27 @@
+[tool.black]
+line-length = 88
+exclude = '''
+/(
+    \.venv
+    | alembic
+)/
+'''
+
+[tool.isort]
+profile = "black"
+skip_glob = ["*/.venv/*", "alembic/*"]
+
+
+[tool.flake8]
+max-line-length = 88
+extend-ignore = "E203"
+exclude = [
+    ".venv",
+    "alembic/versions",
+]
+
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["/.venv/", "alembic/"]
