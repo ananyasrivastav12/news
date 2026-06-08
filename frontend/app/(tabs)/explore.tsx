@@ -1,455 +1,691 @@
-// app/explore.tsx
-
-import React, { useState, useRef, useEffect } from 'react';
+import { useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View,
-  Text,
-  ImageBackground,
-  StyleSheet,
-  TouchableOpacity,
-  SafeAreaView,
   ActivityIndicator,
-  Alert,
-  PanResponder,
   Linking,
+  Pressable,
   ScrollView,
-  Dimensions,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
 } from 'react-native';
-import { Ionicons, Feather, FontAwesome } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-/**
- * ─── CATEGORY LIST ──────────────────────────────────────────────────────────────
- */
-const CATEGORIES = ['Finance', 'History', 'World', 'Politics', 'Random'];
+import { useAppSession } from '@/context/AppSessionContext';
+import {
+  Interest,
+  SavedArticle,
+  createUser,
+  fetchInterests,
+  fetchMyInterests,
+  fetchSavedArticles,
+  generateMyFeed,
+  login,
+  updateInterests,
+} from '@/lib/api';
 
-/**
- * ─── PLACEHOLDER ARTICLES (Mock Data) ─────────────────────────────────────────────
- * Each entry now has a non‐null thumbnailUri. 
- * “Random” will be populated by flattening all others on first render.
- */
-interface ArticlePayload {
-  title: string;
-  extract: string;
-  thumbnailUri: string;   // always non‐null now
-  pageUrl: string;
-}
+type Step = 'account' | 'interests' | 'ready';
+type Tone = 'info' | 'success' | 'error';
 
-const PLACEHOLDER_ARTICLES: Record<string, ArticlePayload[]> = {
-  Finance: [
-    {
-      title: 'Stock Market Rally Amid Economic Recovery',
-      extract:
-        'Global stock markets are experiencing a remarkable rally as economies reopen and vaccination rates climb. Analysts point to strong earnings reports from major corporations, particularly in the technology and financial sectors. However, some experts caution that high valuations could lead to increased volatility if inflationary pressures continue to rise.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/210607/pexels-photo-210607.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl: 'https://en.wikipedia.org/wiki/Stock_market',
-    },
-    {
-      title: 'Cryptocurrency Adoption in Developing Countries',
-      extract:
-        'Several developing nations are seeing a surge in cryptocurrency usage as citizens seek alternatives to unstable local currencies. Remittances via Bitcoin and stablecoins are becoming more common, bypassing traditional banking systems and reducing transaction fees. Regulators are still catching up with proper frameworks.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/315788/pexels-photo-315788.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl: 'https://en.wikipedia.org/wiki/Cryptocurrency',
-    },
-  ],
-  History: [
-    {
-      title: 'Fall of the Berlin Wall',
-      extract:
-        'On November 9, 1989, the Berlin Wall—dividing East and West Berlin for nearly three decades—was opened, marking the beginning of German reunification and the symbolic end of the Cold War. Thousands of East Germans crossed into West Berlin in jubilant celebration, and within a year, Germany was officially reunified.',
-      thumbnailUri:
-        'https://upload.wikimedia.org/wikipedia/commons/4/4c/West_and_East_Germans_at_the_Brandenburg_Gate_in_1989.jpg',
-      pageUrl: 'https://en.wikipedia.org/wiki/Berlin_Wall',
-    },
-    {
-      title: 'The Renaissance Era',
-      extract:
-        'Spanning roughly from the 14th to the 17th century, the Renaissance was a period of cultural rebirth in Europe, originating in Italy. It saw revolutionary developments in art, literature, science, and philosophy. Notable figures include Leonardo da Vinci, Michelangelo, and Galileo Galilei, whose works laid the foundation for the modern age.',
-      thumbnailUri:
-        'https://upload.wikimedia.org/wikipedia/commons/6/6a/Leonardo_da_Vinci_-_Vitruvian_Man.jpg',
-      pageUrl: 'https://en.wikipedia.org/wiki/Renaissance',
-    },
-  ],
-  World: [
-    {
-      title: 'Global Climate Change Summit 2024',
-      extract:
-        'World leaders convened for the 2024 Climate Change Summit in Geneva to negotiate binding commitments on carbon emissions reductions. Key outcomes included increased funding for renewable energy projects in developing nations and a pledge to phase out coal power by 2040. Environmental NGOs called for even more aggressive action.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/1598663/pexels-photo-1598663.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl:
-        'https://en.wikipedia.org/wiki/United_Nations_Climate_Change_Conference',
-    },
-    {
-      title: 'Mars Rover Discovers Ancient Riverbed',
-      extract:
-        'NASA’s latest Mars rover has uncovered fossilized riverbeds near the planet’s equator, suggesting that liquid water once flowed on the surface. The discovery strengthens the possibility that microbial life could have existed on ancient Mars. Scientists plan to collect samples for a future return mission.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/5472140/pexels-photo-5472140.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl: 'https://en.wikipedia.org/wiki/Mars_rover',
-    },
-  ],
-  Politics: [
-    {
-      title: 'New Trade Deal Signed Between Nations',
-      extract:
-        'In a landmark agreement, Country A and Country B signed a new free-trade deal aimed at reducing tariffs on agricultural exports and technology products. The deal is expected to boost GDP growth by up to 2% annually and strengthen diplomatic ties. Critics warn about potential impacts on local industries.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/3226200/pexels-photo-3226200.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl: 'https://en.wikipedia.org/wiki/Free_trade',
-    },
-    {
-      title: 'Election Reform Debate Heats Up',
-      extract:
-        'Debate over proposed election reforms has intensified as legislators propose changes to voter ID laws and campaign finance rules. Supporters say the reforms will curb fraud and increase transparency, while opponents argue they may disenfranchise minority voters.',
-      thumbnailUri:
-        'https://images.pexels.com/photos/1264075/pexels-photo-1264075.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=750&w=1260',
-      pageUrl: 'https://en.wikipedia.org/wiki/Election',
-    },
-  ],
-  Random: [], // populated once below
+type StatusMessage = {
+  tone: Tone;
+  text: string;
 };
 
-/**
- * ─── EXPLORE SCREEN COMPONENT (Default Export) ───────────────────────────────────
- */
-export default function ExploreScreen() {
-  // On first render, flatten all non‐“Random” lists into PLACEHOLDER_ARTICLES.Random
-  useEffect(() => {
-    if (PLACEHOLDER_ARTICLES.Random.length === 0) {
-      const all: ArticlePayload[] = [];
-      for (const key of CATEGORIES) {
-        if (key === 'Random') continue;
-        all.push(...PLACEHOLDER_ARTICLES[key]);
-      }
-      PLACEHOLDER_ARTICLES.Random = all;
-    }
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : 'Something went wrong.';
+}
+
+export default function SetupScreen() {
+  const router = useRouter();
+  const { accessToken, apiBaseUrl, setAccessToken, userEmail, setUserEmail } =
+    useAppSession();
+  const [password, setPassword] = useState('TestPassword123');
+  const [interests, setInterests] = useState<Interest[]>([]);
+  const [selectedInterestIds, setSelectedInterestIds] = useState<number[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<Step>(accessToken ? 'ready' : 'account');
+  const [status, setStatus] = useState<StatusMessage>({
+    tone: 'info',
+    text: 'Start with an account. After that, you will pick topics and build your first feed.',
+  });
+  const [savedArticles, setSavedArticles] = useState<SavedArticle[]>([]);
+
+  const newsInterests = useMemo(
+    () => interests.filter((interest) => interest.source_type === 'news'),
+    [interests]
+  );
+
+  const selectedCount = selectedInterestIds.length;
+
+  const addLog = useCallback((message: string) => {
+    console.log(`[setup] ${message}`);
   }, []);
 
-  const [selectedCategory, setSelectedCategory] = useState<string>('Random');
-  const [loading, setLoading] = useState<boolean>(true);
-  const [articleData, setArticleData] = useState<ArticlePayload | null>(null);
-  const panResponder = useRef<any>(null);
+  const showStatus = useCallback((tone: Tone, text: string) => {
+    setStatus({ tone, text });
+  }, []);
 
-  // Whenever the category changes (or on mount), load a new placeholder
+  const loadInterests = useCallback(async () => {
+    addLog('Loading interests');
+    try {
+      const items = await fetchInterests(apiBaseUrl);
+      setInterests(items);
+      addLog(`Loaded ${items.length} interests`);
+      return items;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Interest load failed: ${message}`);
+      showStatus('error', `Could not load interests: ${message}`);
+      return [];
+    }
+  }, [addLog, apiBaseUrl, showStatus]);
+
   useEffect(() => {
-    loadNextArticle();
-  }, [selectedCategory]);
+    void loadInterests();
+  }, [loadInterests]);
 
-  /**
-   * ─── loadNextArticle ───────────────────────────────────────────────────────────
-   * Instead of calling a backend, we pick a random object
-   * from PLACEHOLDER_ARTICLES[selectedCategory].
-   */
-  const loadNextArticle = () => {
-    setLoading(true);
+  const loadMyInterests = useCallback(async () => {
+    if (!accessToken) {
+      setSelectedInterestIds([]);
+      return [];
+    }
 
     try {
-      const pool = PLACEHOLDER_ARTICLES[selectedCategory] || [];
-      if (pool.length === 0) {
-        throw new Error(`No placeholders for category "${selectedCategory}"`);
+      const selected = await fetchMyInterests(apiBaseUrl, accessToken);
+      setSelectedInterestIds(selected.map((interest) => interest.id));
+      if (selected.length > 0) {
+        setStep('ready');
+        showStatus('success', `Welcome back. Your profile is tuned to ${selected.length} topics.`);
+      } else {
+        setStep('interests');
+        showStatus('info', 'Choose a few topics once, then your profile will remember them.');
       }
-      const randomIndex = Math.floor(Math.random() * pool.length);
-      const next = pool[randomIndex];
+      return selected;
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Saved interests failed: ${message}`);
+      showStatus('error', `Could not load your profile interests: ${message}`);
+      return [];
+    }
+  }, [accessToken, addLog, apiBaseUrl, showStatus]);
 
-      // Simulate a brief delay so ActivityIndicator is visible
-      setTimeout(() => {
-        setArticleData(next);
-        setLoading(false);
-      }, 300);
-    } catch (err) {
-      console.warn(err);
-      Alert.alert(
-        'Error',
-        `Could not load a placeholder for "${selectedCategory}".`
-      );
-      setArticleData(null);
+  useEffect(() => {
+    if (accessToken) {
+      void loadMyInterests();
+    }
+  }, [accessToken, loadMyInterests]);
+
+  const loadSavedArticles = useCallback(async () => {
+    if (!accessToken) {
+      setSavedArticles([]);
+      return;
+    }
+    try {
+      const articles = await fetchSavedArticles(apiBaseUrl, accessToken);
+      setSavedArticles(articles);
+      addLog(`Loaded ${articles.length} saved articles`);
+    } catch (error) {
+      addLog(`Saved articles failed: ${getErrorMessage(error)}`);
+    }
+  }, [accessToken, addLog, apiBaseUrl]);
+
+  useEffect(() => {
+    void loadSavedArticles();
+  }, [loadSavedArticles]);
+
+  function toggleInterest(id: number) {
+    setSelectedInterestIds((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    );
+  }
+
+  async function loginAndContinue(email: string) {
+    addLog(`Logging in ${email}`);
+    const response = await login(apiBaseUrl, { email, password });
+    setAccessToken(response.access_token);
+    showStatus('success', 'You are in. Loading your profile now.');
+    addLog(`Logged in ${email}`);
+  }
+
+  async function handleCreateUser() {
+    const email = userEmail.trim();
+    if (!email) {
+      showStatus('error', 'Enter an email before creating an account.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      addLog(`Creating account ${email}`);
+      await createUser(apiBaseUrl, { email, password });
+      showStatus('success', 'Account created. Logging you in now.');
+      addLog(`Created account ${email}`);
+      await loginAndContinue(email);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Create failed: ${message}`);
+      if (message.toLowerCase().includes('already registered')) {
+        showStatus('info', 'That account already exists. Tap Log in to continue with it.');
+      } else {
+        showStatus('error', `Could not create account: ${message}`);
+      }
+    } finally {
       setLoading(false);
     }
-  };
+  }
 
-  /**
-   * ─── handleSwipeLeft ────────────────────────────────────────────────────────────
-   * Called when the user swipes left on the card.
-   */
-  const handleSwipeLeft = () => {
-    loadNextArticle();
-  };
-
-  /**
-   * ─── handleReadMore ─────────────────────────────────────────────────────────────
-   * Opens the article’s pageUrl in the device’s browser.
-   */
-  const handleReadMore = () => {
-    if (articleData?.pageUrl) {
-      Linking.openURL(articleData.pageUrl).catch((e) => {
-        console.warn('Failed to open URL:', e);
-      });
+  async function handleLogin() {
+    const email = userEmail.trim();
+    if (!email) {
+      showStatus('error', 'Enter an email before logging in.');
+      return;
     }
-  };
 
-  /**
-   * ─── Build a PanResponder to detect left swipe (dx < -50) ────────────────────────
-   */
-  useEffect(() => {
-    panResponder.current = PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_evt, gestureState) => {
-        return Math.abs(gestureState.dx) > Math.abs(gestureState.dy);
-      },
-      onPanResponderRelease: (_evt, gestureState) => {
-        if (gestureState.dx < -50) {
-          handleSwipeLeft();
-        }
-      },
-    });
-  }, []);
+    setLoading(true);
+    try {
+      await loginAndContinue(email);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Login failed: ${message}`);
+      showStatus('error', `Could not log in: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleSaveInterests() {
+    if (!accessToken) {
+      showStatus('error', 'Log in first, then pick your interests.');
+      setStep('account');
+      return;
+    }
+    if (selectedInterestIds.length === 0) {
+      showStatus('error', 'Pick at least one topic so the feed has a direction.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      addLog(`Saving ${selectedInterestIds.length} interests`);
+      const saved = await updateInterests(apiBaseUrl, accessToken, selectedInterestIds);
+      setStep('ready');
+      showStatus('success', `Saved ${saved.length} topics. Now build your first brief.`);
+      addLog(`Saved ${saved.length} interests`);
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Save interests failed: ${message}`);
+      showStatus('error', `Could not save interests: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleGenerateFeed() {
+    if (!accessToken) {
+      showStatus('error', 'Log in first, then generate your feed.');
+      setStep('account');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      addLog('Generating feed');
+      const response = await generateMyFeed(apiBaseUrl, accessToken);
+      addLog(response.message);
+      if (response.items.length === 0) {
+        showStatus(
+          'info',
+          'No summarized articles exist yet. Run the news pipeline, then generate again.'
+        );
+      } else {
+        showStatus('success', response.message);
+        router.replace('/');
+      }
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Generate feed failed: ${message}`);
+      showStatus('error', `Could not generate feed: ${message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const canPickInterests = step === 'interests' || step === 'ready';
+  const canGenerate = step === 'ready';
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* ─── HEADER ──────────────────────────────────────────────────────────────── */}
-      <View style={styles.header}>
-        <View style={styles.spacer} />
-        <Text style={styles.headerTitle}>Explore</Text>
-        <TouchableOpacity style={styles.settingsButton}>
-          <Feather name="settings" size={24} color="#101619" />
-        </TouchableOpacity>
-      </View>
+      <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.hero}>
+          <Text style={styles.kicker}>Personal news, tuned by you</Text>
+          <Text style={styles.title}>
+            {step === 'account'
+              ? 'Create your reader'
+              : step === 'interests'
+                ? 'Pick your lanes'
+                : 'Profile'}
+          </Text>
+          <Text style={styles.subtitle}>
+            {step === 'account'
+              ? 'Sign in first. The app will move you forward when the backend confirms it.'
+              : step === 'interests'
+                ? 'Tap a few topics that should shape your morning cards.'
+                : 'Manage interests, generate your real feed, and revisit saved stories.'}
+          </Text>
+        </View>
 
-      {/* ─── MAIN BODY ────────────────────────────────────────────────────────────── */}
-      <View style={styles.exploreBody}>
-        {loading ? (
-          // Show spinner while we “load” a placeholder
-          <ActivityIndicator
-            size="large"
-            color="#101619"
-            style={{ flex: 1 }}
-          />
-        ) : articleData ? (
-          <View
-            style={styles.cardWrapper}
-            {...panResponder.current.panHandlers}
-          >
-            {/* ── HERO IMAGE + TAGS OVERLAY ────────────────────────────────── */}
-            <ImageBackground
-              source={{
-                uri: articleData.thumbnailUri, 
-                // Guaranteed non-null in our placeholders
-              }}
-              style={styles.heroImage}
-              imageStyle={styles.heroImageRounded}
-            >
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.tagScroll}
-                contentContainerStyle={{ alignItems: 'center' }}
+        <View style={styles.progressRow}>
+          {(['account', 'interests', 'ready'] as Step[]).map((item, index) => {
+            const active = item === step;
+            const complete =
+              (item === 'account' && accessToken) ||
+              (item === 'interests' && step === 'ready');
+            return (
+              <View
+                key={item}
+                style={[
+                  styles.progressDot,
+                  active && styles.progressDotActive,
+                  complete && styles.progressDotComplete,
+                ]}
               >
-                {CATEGORIES.map((cat) => {
-                  const isSelected = cat === selectedCategory;
-                  return (
-                    <TouchableOpacity
-                      key={cat}
-                      onPress={() => setSelectedCategory(cat)}
-                      style={[
-                        styles.categoryTag,
-                        isSelected && styles.categoryTagSelected,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.categoryTagText,
-                          isSelected && styles.categoryTagTextSelected,
-                        ]}
-                      >
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </ImageBackground>
-
-            {/* ── ARTICLE TITLE & SUMMARY ─────────────────────────────────────── */}
-            <View style={styles.articleContent}>
-              <Text style={styles.articleTitle}>{articleData.title}</Text>
-              <ScrollView style={{ flex: 1, marginBottom: 8 }}>
-                <Text style={styles.articleBody}>{articleData.extract}</Text>
-              </ScrollView>
-              <TouchableOpacity
-                style={styles.readMoreButton}
-                onPress={handleReadMore}
-              >
-                <Text style={styles.readMoreText}>
-                  Read More on Wikipedia
+                <Text style={[styles.progressText, (active || complete) && styles.progressTextActive]}>
+                  {index + 1}
                 </Text>
-              </TouchableOpacity>
+              </View>
+            );
+          })}
+        </View>
+
+        <View style={[styles.statusCard, styles[`status_${status.tone}`]]}>
+          {loading ? <ActivityIndicator color="#1268ff" /> : null}
+          <Text style={styles.statusText}>{status.text}</Text>
+        </View>
+
+        {step === 'account' ? (
+          <View style={styles.panel}>
+            <Text style={styles.sectionTitle}>Account</Text>
+            <TextInput
+              value={userEmail}
+              onChangeText={setUserEmail}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="email-address"
+              style={styles.input}
+              placeholder="you@example.com"
+              placeholderTextColor="#8a94a6"
+            />
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              secureTextEntry
+              style={styles.input}
+              placeholder="Password"
+              placeholderTextColor="#8a94a6"
+            />
+            <View style={styles.buttonRow}>
+              <Pressable
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  pressed && styles.buttonPressed,
+                  loading && styles.buttonDisabled,
+                ]}
+                onPress={() => void handleCreateUser()}
+              >
+                <Text style={styles.primaryButtonText}>Create account</Text>
+              </Pressable>
+              <Pressable
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.secondaryButton,
+                  pressed && styles.buttonPressed,
+                  loading && styles.buttonDisabled,
+                ]}
+                onPress={() => void handleLogin()}
+              >
+                <Text style={styles.secondaryButtonText}>Log in</Text>
+              </Pressable>
             </View>
           </View>
-        ) : (
-          // Empty / Error state (unlikely with placeholders)
-          <View style={styles.emptyState}>
-            <Text style={{ color: '#577c8e' }}>No article to show.</Text>
-            <TouchableOpacity
-              onPress={loadNextArticle}
-              style={styles.retryButton}
-            >
-              <Text style={styles.retryText}>Try Again</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+        ) : null}
 
+        {canPickInterests ? (
+          <View style={styles.panel}>
+            <View style={styles.panelHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Interests</Text>
+                <Text style={styles.sectionHint}>{selectedCount} selected</Text>
+              </View>
+              <Pressable
+                disabled={loading}
+                style={styles.smallButton}
+                onPress={() => void loadInterests()}
+              >
+                <Text style={styles.smallButtonText}>Refresh</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.chipWrap}>
+              {newsInterests.map((interest) => {
+                const selected = selectedInterestIds.includes(interest.id);
+                return (
+                  <Pressable
+                    key={interest.id}
+                    onPress={() => toggleInterest(interest.id)}
+                    style={({ pressed }) => [
+                      styles.chip,
+                      selected && styles.chipSelected,
+                      pressed && styles.chipPressed,
+                    ]}
+                  >
+                    <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
+                      {interest.name}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            {step === 'interests' ? (
+              <Pressable
+                disabled={loading}
+                style={({ pressed }) => [
+                  styles.fullButton,
+                  pressed && styles.buttonPressed,
+                  loading && styles.buttonDisabled,
+                ]}
+                onPress={() => void handleSaveInterests()}
+              >
+                <Text style={styles.primaryButtonText}>Save and continue</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
+        {canGenerate ? (
+          <View style={styles.panel}>
+            <Text style={styles.sectionTitle}>Brief</Text>
+            <Text style={styles.bodyText}>
+              Real cards need ingested and summarized articles from the backend pipeline.
+            </Text>
+            <Pressable
+              disabled={loading}
+              style={({ pressed }) => [
+                styles.fullButton,
+                pressed && styles.buttonPressed,
+                loading && styles.buttonDisabled,
+              ]}
+              onPress={() => void handleGenerateFeed()}
+            >
+              <Text style={styles.primaryButtonText}>Generate feed</Text>
+            </Pressable>
+          </View>
+        ) : null}
+
+        {accessToken ? (
+          <View style={styles.panel}>
+            <View style={styles.panelHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Saved articles</Text>
+                <Text style={styles.sectionHint}>{savedArticles.length} bookmarked</Text>
+              </View>
+              <Pressable
+                disabled={loading}
+                style={styles.smallButton}
+                onPress={() => void loadSavedArticles()}
+              >
+                <Text style={styles.smallButtonText}>Refresh</Text>
+              </Pressable>
+            </View>
+            {savedArticles.length === 0 ? (
+              <Text style={styles.bodyText}>Saved stories will show here after you tap 🔖 on a card.</Text>
+            ) : (
+              savedArticles.map((article) => (
+                <Pressable
+                  key={article.id}
+                  style={styles.savedArticle}
+                  onPress={() => void Linking.openURL(article.url)}
+                >
+                  <Text style={styles.savedTitle}>{article.title}</Text>
+                  <Text style={styles.savedMeta}>{article.source || article.primary_category}</Text>
+                </Pressable>
+              ))
+            )}
+          </View>
+        ) : null}
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
-/**
- * ─── STYLES ───────────────────────────────────────────────────────────────────
- */
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const CARD_HORIZONTAL_MARGIN = 16;
-const CARD_VERTICAL_MARGIN = 16;
-
 const styles = StyleSheet.create({
-  // ─── CONTAINER ───────────────────────────────────────────────────────────────
   container: {
     flex: 1,
-    backgroundColor: '#f3f5f6',
+    backgroundColor: '#f7f8fb',
   },
-
-  // ─── HEADER ─────────────────────────────────────────────────────────────────
-  header: {
+  content: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: 22,
+    gap: 16,
+  },
+  hero: {
+    gap: 8,
+  },
+  kicker: {
+    color: '#1268ff',
+    fontSize: 13,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  title: {
+    color: '#08090a',
+    fontSize: 34,
+    fontWeight: '900',
+  },
+  subtitle: {
+    color: '#5f6673',
+    fontSize: 16,
+    lineHeight: 23,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  progressDot: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#d8dde8',
+    backgroundColor: '#ffffff',
+  },
+  progressDotActive: {
+    backgroundColor: '#1268ff',
+    borderColor: '#1268ff',
+  },
+  progressDotComplete: {
+    backgroundColor: '#12b981',
+    borderColor: '#12b981',
+  },
+  progressText: {
+    color: '#5f6673',
+    fontWeight: '800',
+  },
+  progressTextActive: {
+    color: '#fff',
+  },
+  statusCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    padding: 14,
+    gap: 10,
+  },
+  status_info: {
+    backgroundColor: '#eef5ff',
+    borderColor: '#b8d2ff',
+  },
+  status_success: {
+    backgroundColor: '#ecfdf5',
+    borderColor: '#a7f3d0',
+  },
+  status_error: {
+    backgroundColor: '#fff1f0',
+    borderColor: '#ffb4a8',
+  },
+  statusText: {
+    color: '#111827',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  panel: {
+    backgroundColor: '#ffffff',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#d8dde8',
+    padding: 18,
+    gap: 14,
+    shadowColor: '#0b1220',
+    shadowOpacity: 0.08,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+  },
+  panelHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    height: 56,
-    paddingHorizontal: 16,
-    backgroundColor: '#f3f5f6',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e9eff1',
+    justifyContent: 'space-between',
+    gap: 12,
   },
-  spacer: {
-    width: 24,
+  sectionTitle: {
+    color: '#08090a',
+    fontSize: 22,
+    fontWeight: '900',
   },
-  headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 18,
+  sectionHint: {
+    color: '#6b7280',
     fontWeight: '700',
-    color: '#101619',
+    marginTop: 2,
   },
-  settingsButton: {
-    width: 24,
-    alignItems: 'flex-end',
+  bodyText: {
+    color: '#3b414b',
+    fontSize: 15,
+    lineHeight: 22,
   },
-
-  // ─── MAIN BODY ──────────────────────────────────────────────────────────────
-  exploreBody: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: CARD_HORIZONTAL_MARGIN,
-    paddingVertical: CARD_VERTICAL_MARGIN,
-  },
-
-  // ─── CARD WRAPPER ───────────────────────────────────────────────────────────
-  cardWrapper: {
-    flex: 1,
-    width: SCREEN_WIDTH - 2 * CARD_HORIZONTAL_MARGIN,
-    backgroundColor: '#ffffff',
-    borderRadius: 12,
-    overflow: 'hidden',
-    // iOS shadow
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    // Android elevation
-    elevation: 3,
-  },
-
-  // ─── HERO IMAGE + TAGS ──────────────────────────────────────────────────────
-  heroImage: {
-    width: '100%',
-    height: '35%', // ~35% of card height
-    justifyContent: 'flex-start',
-  },
-  heroImageRounded: {
-    borderTopLeftRadius: 12,
-    borderTopRightRadius: 12,
-  },
-  tagScroll: {
-    position: 'absolute',
-    top: 8,
-    left: 8,
-    right: 8,
-  },
-  categoryTag: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: 'rgba(255,255,255,0.75)',
-    borderRadius: 16,
-    marginRight: 8,
-  },
-  categoryTagSelected: {
-    backgroundColor: '#add6ea',
-  },
-  categoryTagText: {
-    color: '#101619',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  categoryTagTextSelected: {
-    color: '#101619',
-    fontWeight: '700',
-  },
-
-  // ─── ARTICLE CONTENT ─────────────────────────────────────────────────────────
-  articleContent: {
-    flex: 1,
-    padding: 12,
-  },
-  articleTitle: {
+  input: {
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: '#ccd4e1',
+    backgroundColor: '#fff',
+    color: '#08090a',
     fontSize: 16,
-    fontWeight: '700',
-    color: '#101619',
-    marginBottom: 8,
+    paddingHorizontal: 15,
+    paddingVertical: 13,
   },
-  articleBody: {
-    fontSize: 14,
-    lineHeight: 20,
-    color: '#577c8e',
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
-  readMoreButton: {
-    marginTop: 12,
-    paddingVertical: 10,
-    alignItems: 'center',
-    backgroundColor: '#add6ea',
-    borderRadius: 20,
-  },
-  readMoreText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#101619',
-  },
-
-  // ─── EMPTY / ERROR STATE ─────────────────────────────────────────────────────
-  emptyState: {
+  primaryButton: {
     flex: 1,
-    justifyContent: 'center',
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: '#1268ff',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
   },
-  retryButton: {
-    marginTop: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    backgroundColor: '#e9eff1',
-    borderRadius: 20,
+  secondaryButton: {
+    flex: 1,
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: '#e8f1ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
   },
-  retryText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#101619',
-  }
+  fullButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: '#1268ff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smallButton: {
+    borderRadius: 999,
+    backgroundColor: '#eef5ff',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+  },
+  smallButtonText: {
+    color: '#0b4fd6',
+    fontWeight: '800',
+  },
+  buttonPressed: {
+    transform: [{ scale: 0.98 }],
+    opacity: 0.88,
+  },
+  buttonDisabled: {
+    opacity: 0.55,
+  },
+  primaryButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  secondaryButtonText: {
+    color: '#0b4fd6',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  chipWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  chip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#ccd4e1',
+    backgroundColor: '#fff',
+    paddingHorizontal: 15,
+    paddingVertical: 11,
+  },
+  chipSelected: {
+    backgroundColor: '#e8f1ff',
+    borderColor: '#1268ff',
+  },
+  chipPressed: {
+    transform: [{ scale: 0.96 }],
+  },
+  chipText: {
+    color: '#303741',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  chipTextSelected: {
+    color: '#0b4fd6',
+  },
+  savedArticle: {
+    borderRadius: 16,
+    backgroundColor: '#f4f7fb',
+    padding: 14,
+    gap: 6,
+  },
+  savedTitle: {
+    color: '#08090a',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '800',
+  },
+  savedMeta: {
+    color: '#6b7280',
+    fontSize: 12,
+    fontWeight: '700',
+  },
 });

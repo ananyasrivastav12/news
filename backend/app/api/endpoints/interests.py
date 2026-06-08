@@ -9,6 +9,7 @@ from app.api.dependencies import get_current_user, get_db
 from app.crud import interest as crud_interest
 from app.db import model as db_model
 from app.schemas import interest as interest_schema
+from app.services.user_profile import sync_explicit_interests
 
 router = APIRouter()
 
@@ -34,7 +35,8 @@ def update_user_interests(
     crud_interest.add_user_interests(
         db=db, user=current_user, interest_ids=interest_ids
     )
+    selected_interests = crud_interest.get_user_interests(db, user_id=current_user.id)
+    sync_explicit_interests(db, user=current_user, interests=selected_interests)
+    db.commit()
 
-    # This is the corrected line:
-    # We extract the actual 'interest' object from each 'user_interest' link.
-    return [user_interest.interest for user_interest in current_user.interests]
+    return selected_interests

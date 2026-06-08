@@ -1,6 +1,6 @@
 # In app/schemas/interest.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from app.db.model import SourceType
 
@@ -20,5 +20,4 @@ class InterestCreate(InterestBase):
 class Interest(InterestBase):
     id: int
 
-    class Config:
-        from_attributes = True  # Replaces orm_mode
+    model_config = ConfigDict(from_attributes=True)

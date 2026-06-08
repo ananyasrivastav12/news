@@ -1,34 +1,65 @@
-# In app/services/news.py
+from __future__ import annotations
 
-from typing import Any, Dict, List
+from datetime import datetime
+from typing import Any
 
 import httpx
 
 from app.core.config import settings
 
-NEWS_API_BASE_URL = "https://newsapi.org/v2/top-headlines"
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
-async def fetch_top_headlines(category: str) -> List[Dict[str, Any]]:
-    """
-    Fetches top news headlines for a given category from the News API.
-    """
-    params = {
-        "apiKey": settings.NEWS_API_KEY,
-        "category": category.lower(),
-        "country": "us",
-        "pageSize": 20,
-    }
+class NewsApiService:
+    def __init__(self) -> None:
+        api_key = (settings.NEWS_API_KEY or "").strip()
+        if not api_key:
+            raise RuntimeError("NEWS_API_KEY is missing. Set it in .env / environment.")
 
-    async with httpx.AsyncClient() as client:
-        try:
-            response = await client.get(NEWS_API_BASE_URL, params=params)
+        self.api_key = api_key
+        self.base_url = settings.NEWS_API_BASE_URL.rstrip("/")
+        self.country = settings.NEWS_API_COUNTRY
+        self.page_size = min(max(settings.NEWS_API_PAGE_SIZE, 1), 100)
+
+    async def fetch_top_headlines(
+        self,
+        *,
+        category: str,
+        query: str | None = None,
+        page_size: int | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {
+            "apiKey": self.api_key,
+            "country": self.country,
+            "category": category,
+            "pageSize": page_size or self.page_size,
+        }
+        if query:
+            params["q"] = query
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.get(f"{self.base_url}/top-headlines", params=params)
             response.raise_for_status()
-            data = response.json()
-            return data.get("articles", [])
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error occurred while fetching '{category}': {e}")
-            return []
-        except Exception as e:
-            print(f"An error occurred while fetching '{category}': {e}")
-            return []
+            payload = response.json()
+
+        normalized: list[dict[str, Any]] = []
+        for article in payload.get("articles") or []:
+            normalized.append(
+                {
+                    "title": article.get("title") or "",
+                    "source": (article.get("source") or {}).get("name"),
+                    "url": article.get("url") or "",
+                    "published_at": _parse_dt(article.get("publishedAt")),
+                    "description": article.get("description"),
+                    "content": article.get("content"),
+                    "image_url": article.get("urlToImage"),
+                }
+            )
+        return [article for article in normalized if article["url"]]

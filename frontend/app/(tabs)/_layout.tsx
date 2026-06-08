@@ -8,30 +8,34 @@ export default function TabLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: '#101619',
-        tabBarInactiveTintColor: '#577c8e',
-        tabBarStyle: { backgroundColor: '#f3f5f6', borderTopColor: '#e9eff1' },
+        tabBarActiveTintColor: '#1268ff',
+        tabBarInactiveTintColor: '#6b7280',
+        tabBarStyle: {
+          backgroundColor: '#ffffff',
+          borderTopColor: '#d8dde8',
+          height: 88,
+          paddingTop: 8,
+        },
       }}
     >
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Home',
+          title: 'Feed',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" color={color} size={size} />
+            <Ionicons name="newspaper-outline" color={color} size={size} />
           ),
         }}
       />
       <Tabs.Screen
         name="explore"
         options={{
-          title: 'Explore',
+          title: 'Profile',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="search" color={color} size={size} />
+            <Ionicons name="person-circle-outline" color={color} size={size} />
           ),
         }}
       />
-      {/* Add other tabs here if needed (bookmarks, profile, etc.) */}
     </Tabs>
   );
 }

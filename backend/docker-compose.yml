@@ -1,7 +1,7 @@
 version: '3.9'
 services:
   db:
-    image: postgres:15
+    image: postgres:16
     restart: always
     environment:
       POSTGRES_USER: newsuser
@@ -32,6 +32,17 @@ services:
   worker:
     build: .
     command: celery -A app.core.celery_app.celery worker --loglevel=info
+    depends_on:
+      - db
+      - redis
+    env_file:
+      - .env
+    volumes:
+      - .:/usr/src/app
+
+  beat:
+    build: .
+    command: celery -A app.core.celery_app.celery beat --loglevel=info
     depends_on:
       - db
       - redis

@@ -28,7 +28,7 @@ if config.config_file_name:
     fileConfig(config.config_file_name)
 
 # import your SQLAlchemy models' Base
-from app.db.model import Base  # Corrected from 'models' to 'model'
+from app.db.model import Base  # noqa: E402
 
 target_metadata = Base.metadata
 

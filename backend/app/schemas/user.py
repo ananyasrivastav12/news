@@ -1,21 +1,14 @@
-# app/schemas/user.py
-
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
-# Shared properties
 class UserBase(BaseModel):
     email: EmailStr
 
 
-# Properties to receive via API on creation
 class UserCreate(UserBase):
-    password: str
+    password: str = Field(min_length=8, max_length=1024)
 
 
-# Properties to return to client
 class User(UserBase):
     id: int
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

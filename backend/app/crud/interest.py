@@ -34,3 +34,12 @@ def add_user_interests(db: Session, user: db_model.User, interest_ids: List[int]
 
     db.commit()
     return user
+
+
+def get_user_interests(db: Session, user_id: int) -> List[db_model.Interest]:
+    user_interest_links = (
+        db.query(db_model.UserInterest)
+        .filter(db_model.UserInterest.user_id == user_id)
+        .all()
+    )
+    return [link.interest for link in user_interest_links if link.interest is not None]

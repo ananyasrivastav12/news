@@ -1,53 +1,66 @@
 News Summarizer API
-This is the backend service for the News Summarizer application. It provides a RESTful API for user management, interest tracking, and delivering summarized content. The application is built with FastAPI and runs in Docker containers.
 
-Prerequisites
-Before you begin, ensure you have the following installed on your system:
-Docker
-Docker Compose (typically included with Docker Desktop)
-Setup Instructions
-Follow these steps to get the application running locally.
+This backend now supports a batched news pipeline for a personalized morning feed:
 
-1. Clone the Repository
-git clone <your-repository-url>
-cd <your-repository-name>/backend
+- category-based NewsAPI ingestion on a schedule
+- normalization, recency filtering, and deduplication before storage
+- offline article summarization stored ahead of feed generation
+- per-user morning feed generation with lightweight heuristic ranking
+- interaction logging that updates category and keyword preference scores
 
-2. Create the Environment File
-The application requires an environment file (.env) for configuration. A template is provided in .env.example.
-Copy the example file:
-cp .env.example .env
+Setup
 
-Generate a Secret Key: The SECRET_KEY is used to sign security tokens. Generate a secure key by running the following command in your terminal and copy the output.
-openssl rand -hex 32
+1. Copy [`.env.example`](/Users/ananyasrivastava/Desktop/Projects/news/backend/.env.example) to `.env`.
+2. Fill in `SECRET_KEY`, `NEWS_API_KEY`, and optionally `OPENAI_API_KEY`.
+3. Start the stack:
 
-Update the .env file: Open the newly created .env file and paste the key you just generated as the value for SECRET_KEY.
-Your final .env file should look like this:
-DATABASE_URL="postgresql://newsuser:newspass@db:5432/newsdb"
-SECRET_KEY="your_super_secret_key_pasted_here"
-
-Running the Application
-Build and Start the Services:
-From the backend directory, run the following command. This will build the FastAPI application's Docker image and start both the web server and database containers. The -d flag runs them in the background (detached mode).
+```bash
 docker-compose up --build -d
+```
 
-Verify the Services are Running:
-To check that the containers have started successfully, run:
-docker-compose ps
+4. Apply migrations:
 
-You should see both backend-db-1 and backend-web-1 with a STATUS of running or Up.
-Running Database Migrations
-The first time you start the application, you need to apply the database migrations to create the necessary tables.
-
+```bash
 docker-compose exec web alembic upgrade head
+```
 
-You only need to run this command once initially. If you make changes to the database models in app/db/model.py in the future, you will need to generate a new migration and apply it.
+5. Seed interests if needed:
 
-Accessing the API
-API Documentation (Swagger UI): http://localhost:8000/docs
-Health Check Endpoint: http://localhost:8000/health
-The interactive API documentation at /docs allows you to test all available endpoints directly from your browser.
+```bash
+docker-compose exec web python app/db/scripts/initial_data.py
+```
 
-Stopping the Application
-To stop the running Docker containers, use the following command:
+Services
 
-docker-compose down
+- `web`: FastAPI API
+- `worker`: Celery worker for ingestion, summarization, and feed jobs
+- `beat`: Celery Beat scheduler for daily ingestion/summarization/feed generation
+- `db`: Postgres
+- `redis`: Celery broker/backend
+
+Manual task triggers
+
+- `POST /api/tasks/fetch-news`
+- `POST /api/tasks/summarize-news`
+- `POST /api/tasks/generate-feeds`
+- `POST /api/tasks/daily-pipeline`
+- `POST /api/tasks/backfill-interest-news`
+
+Feed and interaction APIs
+
+- `GET /api/users/me/feed`
+- `POST /api/users/me/interactions`
+
+Pipeline overview
+
+1. Celery Beat fetches recent NewsAPI headlines by category in batches.
+2. Articles are normalized into a consistent schema and deduplicated by URL/story key/title similarity.
+3. Pending articles are summarized offline and stored in the `summaries` table.
+4. At the morning schedule, feeds are generated per user from precomputed summaries.
+5. User interactions update category and keyword preference scores for future ranking.
+
+Notes
+
+- If `OPENAI_API_KEY` is unset, summarization falls back to a deterministic extractive summary so the pipeline still works for local MVP development.
+- Feed generation never calls summarization in the request path.
+- The ranking strategy is intentionally lightweight and interpretable so weights can be tuned in code as data comes in.

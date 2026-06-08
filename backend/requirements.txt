@@ -110,7 +110,6 @@ gunicorn
 psycopg2-binary
 email-validator
 passlib
-bcrypt
 python-jose[cryptography]
 python-multipart
 pydantic-settings
