@@ -12,3 +12,23 @@ class UserCreate(UserBase):
 class User(UserBase):
     id: int
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProfileSignalCounts(BaseModel):
+    viewed: int
+    liked: int
+    disliked: int
+    saved: int
+    clicked: int
+
+
+class FeedProfileStats(BaseModel):
+    total: int
+    unread: int
+    explicit_interest_matches: int
+
+
+class ProfileSummary(BaseModel):
+    interests: list[str]
+    signal_counts: ProfileSignalCounts
+    today_feed: FeedProfileStats

@@ -42,3 +42,14 @@ def get_current_user(
     if user is None:
         raise credentials_exception
     return user
+
+
+def get_current_admin_user(
+    current_user: db_model.User = Depends(get_current_user),
+):
+    if current_user.email.lower() not in settings.admin_emails:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return current_user

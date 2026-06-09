@@ -116,3 +116,5 @@ pydantic-settings
 httpx
 celery
 redis
+google-auth
+requests

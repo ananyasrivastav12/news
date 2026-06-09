@@ -145,6 +145,7 @@ def seed_demo_feed(
                 normalized_title=normalized_title,
                 original_url=payload["url"],
                 source=payload["source"],
+                country="us",
                 description=payload["description"],
                 content=payload["description"],
                 raw_text=f"{payload['title']}\n{payload['description']}",

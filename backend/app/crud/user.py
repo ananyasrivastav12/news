@@ -18,3 +18,14 @@ def create_user(db: Session, user):
     db.commit()
     db.refresh(db_user)
     return db_user
+
+
+def create_google_user(db: Session, *, email: str):
+    db_user = model.User(
+        email=email,
+        hashed_password=get_password_hash(f"google-auth:{email}"),
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user

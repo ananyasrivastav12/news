@@ -160,3 +160,12 @@ def test_health_and_cors_preflight():
     assert (
         cors_response.headers["access-control-allow-origin"] == "http://localhost:8081"
     )
+
+
+def test_google_login_requires_backend_configuration():
+    client = TestClient(app)
+
+    response = client.post("/api/login/google", json={"id_token": "not-real"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Google login is not configured on the backend."

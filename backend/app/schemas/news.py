@@ -16,6 +16,7 @@ class FeedArticle(BaseModel):
     id: int
     title: str
     source: str | None
+    country: str
     url: str = Field(alias="original_url")
     published_at: datetime | None
     primary_category: str
@@ -32,6 +33,7 @@ class FeedItem(BaseModel):
     rank_position: int
     ranking_score: float
     ranking_reason: str | None
+    is_viewed: bool
     article: FeedArticle
 
     model_config = ConfigDict(from_attributes=True)

@@ -14,6 +14,7 @@ BASE_DELTAS = {
     db_model.InteractionType.SAVE: 1.8,
     db_model.InteractionType.SKIP: -1.0,
 }
+COUNTRY_INTEREST_NAMES = {"india", "in", "united states", "us", "usa"}
 
 
 def log_interaction(
@@ -75,6 +76,7 @@ def sync_explicit_interests(
         interest.name.lower()
         for interest in interests
         if interest.source_type == db_model.SourceType.NEWS
+        and interest.name.lower() not in COUNTRY_INTEREST_NAMES
     }
 
     existing_preferences = {
@@ -93,11 +95,12 @@ def sync_explicit_interests(
                 score=0.0,
             )
             db.add(preference)
-        preference.score = max(preference.score, 2.5)
+        preference.score = max(preference.score, 4.0)
 
     for category, preference in existing_preferences.items():
         if category not in selected_news_categories:
-            preference.score = round(preference.score * 0.6, 4)
+            decayed_score = round(preference.score * 0.15, 4)
+            preference.score = decayed_score if abs(decayed_score) >= 0.25 else 0.0
 
 
 def _update_preferences(

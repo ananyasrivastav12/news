@@ -18,6 +18,8 @@ import { useAppSession } from '@/context/AppSessionContext';
 import { FeedItem, deleteInteraction, fetchFeed, logInteraction } from '@/lib/api';
 
 type ReactionType = 'like' | 'skip' | 'save';
+const IMAGE_PREFETCH_BEHIND = 4;
+const IMAGE_PREFETCH_AHEAD = 12;
 
 function formatArticleDate(value: string | null) {
   if (!value) return 'Recent';
@@ -30,16 +32,29 @@ function formatArticleDate(value: string | null) {
 
 export default function FeedScreen() {
   const router = useRouter();
-  const { accessToken, apiBaseUrl, userEmail } = useAppSession();
+  const { accessToken, apiBaseUrl, clearSession, sessionReady, userEmail } =
+    useAppSession();
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [activeReactions, setActiveReactions] = useState<Record<number, Partial<Record<ReactionType, boolean>>>>({});
+  const [activeReactions, setActiveReactions] = useState<
+    Record<number, Partial<Record<ReactionType, boolean>>>
+  >({});
+  const viewedArticleIdsRef = useRef<Set<number>>(new Set());
   const cardOpenedAt = useRef<number>(Date.now());
+  const animatingRef = useRef(false);
   const swipe = useRef(new Animated.ValueXY()).current;
 
   const currentItem = feed[currentIndex] ?? null;
   const isCaughtUp = feed.length > 0 && currentIndex >= feed.length;
+  const warmImageUrls = useMemo(() => {
+    const start = Math.max(0, currentIndex - IMAGE_PREFETCH_BEHIND);
+    const end = Math.min(feed.length, currentIndex + IMAGE_PREFETCH_AHEAD + 1);
+    return feed
+      .slice(start, end)
+      .map((item) => item.article.image_url)
+      .filter((url): url is string => Boolean(url));
+  }, [currentIndex, feed]);
   const feedStats = useMemo(
     () => ({
       current: Math.min(currentIndex + 1, feed.length),
@@ -59,20 +74,37 @@ export default function FeedScreen() {
       setLoading(true);
       try {
         const items = await fetchFeed(apiBaseUrl, accessToken, forceRefresh);
+        const firstUnreadIndex = items.findIndex(
+          (item) =>
+            !item.is_viewed && !viewedArticleIdsRef.current.has(item.article.id)
+        );
         setFeed(items);
-        setCurrentIndex(0);
+        setCurrentIndex(firstUnreadIndex >= 0 ? firstUnreadIndex : 0);
         setActiveReactions({});
         cardOpenedAt.current = Date.now();
+        swipe.stopAnimation();
+        swipe.setValue({ x: 0, y: 0 });
       } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unable to load feed.';
+        if (
+          message.toLowerCase().includes('could not validate credentials') ||
+          message.toLowerCase().includes('invalid token') ||
+          message.toLowerCase().includes('401')
+        ) {
+          clearSession();
+          router.replace('/explore');
+          return;
+        }
         Alert.alert(
           'Feed error',
-          error instanceof Error ? error.message : 'Unable to load feed.'
+          message
         );
       } finally {
         setLoading(false);
       }
     },
-    [accessToken, apiBaseUrl]
+    [accessToken, apiBaseUrl, clearSession, router, swipe]
   );
 
   useEffect(() => {
@@ -80,18 +112,15 @@ export default function FeedScreen() {
   }, [loadFeed]);
 
   useEffect(() => {
-    const urls = feed
-      .slice(currentIndex + 1, currentIndex + 3)
-      .map((item) => item.article.image_url)
-      .filter((url): url is string => Boolean(url));
-
-    if (urls.length > 0) {
-      void Image.prefetch(urls);
+    if (warmImageUrls.length > 0) {
+      void Image.prefetch(warmImageUrls, 'memory-disk');
     }
-  }, [currentIndex, feed]);
+  }, [warmImageUrls]);
 
   const resetSwipe = useCallback(() => {
     cardOpenedAt.current = Date.now();
+    animatingRef.current = false;
+    swipe.stopAnimation();
     swipe.setValue({ x: 0, y: 0 });
   }, [swipe]);
 
@@ -170,6 +199,8 @@ export default function FeedScreen() {
 
   const flingCard = useCallback(
     (direction: 'left' | 'right') => {
+      if (animatingRef.current) return;
+
       if (direction === 'right' && currentIndex === 0) {
         Animated.spring(swipe, {
           toValue: { x: 0, y: 0 },
@@ -178,6 +209,7 @@ export default function FeedScreen() {
         return;
       }
 
+      animatingRef.current = true;
       const toX = direction === 'left' ? -420 : 420;
       Animated.timing(swipe, {
         toValue: { x: toX, y: 0 },
@@ -190,7 +222,7 @@ export default function FeedScreen() {
           }
           return Math.max(value - 1, 0);
         });
-        resetSwipe();
+        requestAnimationFrame(resetSwipe);
       });
     },
     [currentIndex, feed.length, resetSwipe, swipe]
@@ -224,8 +256,43 @@ export default function FeedScreen() {
 
   async function openArticle() {
     if (!currentItem) return;
+    const articleUrl = currentItem.article.url ?? currentItem.article.original_url;
+    if (typeof articleUrl !== 'string' || articleUrl.length === 0) {
+      Alert.alert('Article link unavailable', 'This story did not include a valid URL.');
+      return;
+    }
     await sendInteraction('click');
-    await Linking.openURL(currentItem.article.url);
+    await Linking.openURL(articleUrl);
+  }
+
+  useEffect(() => {
+    if (!currentItem || !accessToken) return;
+
+    const articleId = currentItem.article.id;
+    if (viewedArticleIdsRef.current.has(articleId) || currentItem.is_viewed) {
+      return;
+    }
+
+    viewedArticleIdsRef.current.add(articleId);
+    void logInteraction(apiBaseUrl, accessToken, {
+      article_id: articleId,
+      interaction_type: 'view',
+      dwell_time_seconds: 1,
+    }).catch((error) => {
+      console.log(
+        `[feed] view interaction failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`
+      );
+    });
+  }, [accessToken, apiBaseUrl, currentItem]);
+
+  if (!sessionReady) {
+    return (
+      <SafeAreaView style={styles.emptyState}>
+        <ActivityIndicator size="large" color="#1268ff" />
+      </SafeAreaView>
+    );
   }
 
   if (!accessToken) {
@@ -294,16 +361,6 @@ export default function FeedScreen() {
     inputRange: [-220, 0, 220],
     outputRange: ['-7deg', '0deg', '7deg'],
   });
-  const nextOpacity = swipe.x.interpolate({
-    inputRange: [-130, -20],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-  const previousOpacity = swipe.x.interpolate({
-    inputRange: [20, 130],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
   const currentReactions = currentItem ? activeReactions[currentItem.article.id] ?? {} : {};
 
   return (
@@ -322,6 +379,7 @@ export default function FeedScreen() {
 
       <View style={styles.cardStage}>
         <Animated.View
+          key={currentItem.id}
           {...panResponder.panHandlers}
           style={[
             styles.card,
@@ -330,20 +388,15 @@ export default function FeedScreen() {
             },
           ]}
         >
-          <Animated.Text style={[styles.swipeBadge, styles.nextBadge, { opacity: nextOpacity }]}>
-            NEXT
-          </Animated.Text>
-          <Animated.Text
-            style={[styles.swipeBadge, styles.previousBadge, { opacity: previousOpacity }]}
-          >
-            PREV
-          </Animated.Text>
-
           {currentItem.article.image_url ? (
             <Image
               source={{ uri: currentItem.article.image_url }}
               style={styles.heroImage}
               contentFit="cover"
+              cachePolicy="memory-disk"
+              priority="high"
+              recyclingKey={String(currentItem.article.id)}
+              transition={0}
             />
           ) : (
             <View style={styles.imageFallback}>
@@ -406,11 +459,7 @@ export default function FeedScreen() {
           </View>
         </Animated.View>
       </View>
-
-      <View style={styles.swipeHintRow}>
-        <Text style={styles.swipeHint}>previous ⇢</Text>
-        <Text style={styles.swipeHint}>⇠ next</Text>
-      </View>
+      <Text style={styles.swipeHint}>Swipe left for next. Swipe right to go back.</Text>
     </SafeAreaView>
   );
 }
@@ -519,30 +568,6 @@ const styles = StyleSheet.create({
     color: '#2c3036',
     fontWeight: '400',
   },
-  swipeBadge: {
-    position: 'absolute',
-    top: 22,
-    zIndex: 5,
-    borderRadius: 12,
-    borderWidth: 3,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    fontSize: 22,
-    fontWeight: '900',
-    overflow: 'hidden',
-  },
-  nextBadge: {
-    right: 22,
-    color: '#1268ff',
-    borderColor: '#1268ff',
-    transform: [{ rotate: '8deg' }],
-  },
-  previousBadge: {
-    left: 22,
-    color: '#f05a28',
-    borderColor: '#f05a28',
-    transform: [{ rotate: '-8deg' }],
-  },
   reactionRow: {
     flexDirection: 'row',
     gap: 8,
@@ -578,17 +603,13 @@ const styles = StyleSheet.create({
   reactionTextActive: {
     fontSize: 21,
   },
-  swipeHintRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 36,
-    paddingTop: 4,
-    paddingBottom: 22,
-  },
   swipeHint: {
     color: '#7b8493',
     fontSize: 13,
     fontWeight: '800',
+    textAlign: 'center',
+    paddingTop: 4,
+    paddingBottom: 22,
   },
   emptyState: {
     flex: 1,

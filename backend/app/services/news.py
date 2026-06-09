@@ -25,19 +25,20 @@ class NewsApiService:
 
         self.api_key = api_key
         self.base_url = settings.NEWS_API_BASE_URL.rstrip("/")
-        self.country = settings.NEWS_API_COUNTRY
         self.page_size = min(max(settings.NEWS_API_PAGE_SIZE, 1), 100)
 
     async def fetch_top_headlines(
         self,
         *,
         category: str,
+        country: str | None = None,
         query: str | None = None,
         page_size: int | None = None,
     ) -> list[dict[str, Any]]:
+        selected_country = (country or settings.NEWS_API_COUNTRY).lower()
         params: dict[str, Any] = {
             "apiKey": self.api_key,
-            "country": self.country,
+            "country": selected_country,
             "category": category,
             "pageSize": page_size or self.page_size,
         }
@@ -55,6 +56,7 @@ class NewsApiService:
                 {
                     "title": article.get("title") or "",
                     "source": (article.get("source") or {}).get("name"),
+                    "country": selected_country,
                     "url": article.get("url") or "",
                     "published_at": _parse_dt(article.get("publishedAt")),
                     "description": article.get("description"),

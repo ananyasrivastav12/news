@@ -10,11 +10,14 @@ export type FeedItem = {
   rank_position: number;
   ranking_score: number;
   ranking_reason: string | null;
+  is_viewed: boolean;
   article: {
     id: number;
     title: string;
     source: string | null;
-    url: string;
+    country: string;
+    url?: string;
+    original_url?: string;
     published_at: string | null;
     primary_category: string;
     image_url: string | null;
@@ -27,6 +30,28 @@ export type FeedItem = {
 };
 
 export type SavedArticle = FeedItem['article'];
+
+export type ProfileSummary = {
+  interests: string[];
+  signal_counts: {
+    viewed: number;
+    liked: number;
+    disliked: number;
+    saved: number;
+    clicked: number;
+  };
+  today_feed: {
+    total: number;
+    unread: number;
+    explicit_interest_matches: number;
+  };
+};
+
+export type TokenResponse = {
+  access_token: string;
+  token_type: string;
+  email?: string;
+};
 
 async function request<T>(
   apiBaseUrl: string,
@@ -74,7 +99,7 @@ export function login(
   body.append('username', payload.email);
   body.append('password', payload.password);
 
-  return request<{ access_token: string; token_type: string }>(
+  return request<TokenResponse>(
     apiBaseUrl,
     '/api/login/access-token',
     {
@@ -83,6 +108,14 @@ export function login(
       body: body.toString(),
     }
   );
+}
+
+export function loginWithGoogle(apiBaseUrl: string, payload: { id_token: string }) {
+  return request<TokenResponse>(apiBaseUrl, '/api/login/google', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 export function fetchInterests(apiBaseUrl: string) {
@@ -123,6 +156,12 @@ export function fetchFeed(
 
 export function fetchSavedArticles(apiBaseUrl: string, accessToken: string) {
   return request<SavedArticle[]>(apiBaseUrl, '/api/users/me/saved-articles', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+export function fetchProfileSummary(apiBaseUrl: string, accessToken: string) {
+  return request<ProfileSummary>(apiBaseUrl, '/api/users/me/profile-summary', {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 }

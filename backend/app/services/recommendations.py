@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -10,6 +11,8 @@ from app.core.config import settings
 from app.db import model as db_model
 from app.services.embeddings import cosine_similarity
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RankedArticle:
@@ -19,8 +22,25 @@ class RankedArticle:
     has_interaction: bool = False
 
 
+COUNTRY_INTERESTS = {
+    "india": "in",
+    "in": "in",
+    "united states": "us",
+    "us": "us",
+    "usa": "us",
+}
+
+
 def get_explicit_interest_names(user: db_model.User) -> set[str]:
     return {link.interest.name.lower() for link in user.interests}
+
+
+def get_explicit_country_codes(explicit_interests: set[str]) -> set[str]:
+    return {
+        country_code
+        for interest in explicit_interests
+        if (country_code := COUNTRY_INTERESTS.get(interest))
+    }
 
 
 def _keyword_overlap(left: list[str] | None, right: list[str] | None) -> float:
@@ -36,9 +56,12 @@ def _stage_for_article(
     *,
     explicit_interests: set[str],
     explicit_interest_terms: set[str],
+    explicit_country_codes: set[str],
 ) -> int:
     category = item.article.primary_category
     keywords = set(item.article.keywords or [])
+    if item.article.country in explicit_country_codes:
+        return 0
     if category in explicit_interests:
         return 0
     if keywords & explicit_interest_terms:
@@ -85,6 +108,12 @@ def build_today_feed(
         .all()
     )
     if existing:
+        _log_feed_stats(
+            user=user,
+            feed_date=target_date,
+            flashcards=existing,
+            source="existing",
+        )
         return [
             RankedArticle(
                 article=flashcard.article,
@@ -97,11 +126,61 @@ def build_today_feed(
     ranked = rank_articles_for_user(db, user=user)
     persist_feed(db, user=user, ranked_articles=ranked, feed_date=target_date)
     db.commit()
+    persisted = (
+        db.query(db_model.Flashcard)
+        .options(joinedload(db_model.Flashcard.article))
+        .filter(
+            and_(
+                db_model.Flashcard.user_id == user.id,
+                db_model.Flashcard.feed_date == target_date,
+            )
+        )
+        .all()
+    )
+    _log_feed_stats(
+        user=user,
+        feed_date=target_date,
+        flashcards=persisted,
+        source="rebuilt" if force_refresh else "new",
+    )
     return ranked
+
+
+def _log_feed_stats(
+    *,
+    user: db_model.User,
+    feed_date: date,
+    flashcards: list[db_model.Flashcard],
+    source: str,
+) -> None:
+    explicit_interests = get_explicit_interest_names(user)
+    explicit_country_codes = get_explicit_country_codes(explicit_interests)
+    explicit_matches = sum(
+        1
+        for flashcard in flashcards
+        if flashcard.article is not None
+        and (
+            flashcard.article.primary_category in explicit_interests
+            or flashcard.article.country in explicit_country_codes
+        )
+    )
+    unread_count = sum(1 for flashcard in flashcards if not flashcard.is_viewed)
+    logger.info(
+        "Feed %s user_id=%s date=%s total=%s unread=%s "
+        "explicit_interest_matches=%s interests=%s",
+        source,
+        user.id,
+        feed_date.isoformat(),
+        len(flashcards),
+        unread_count,
+        explicit_matches,
+        sorted(explicit_interests),
+    )
 
 
 def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedArticle]:
     explicit_interests = get_explicit_interest_names(user)
+    explicit_country_codes = get_explicit_country_codes(explicit_interests)
     explicit_interest_terms = {
         token.lower()
         for interest in explicit_interests
@@ -124,7 +203,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
         .options(joinedload(db_model.UserArticleInteraction.article))
         .filter(db_model.UserArticleInteraction.user_id == user.id)
         .order_by(desc(db_model.UserArticleInteraction.created_at))
-        .limit(100)
+        .limit(max(settings.MAX_FEED_ITEMS * 2, 1000))
         .all()
     )
     interacted_story_keys = {
@@ -177,6 +256,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
         has_interaction = article.story_key in interacted_story_keys
 
         explicit_score = 2.5 if article.primary_category in explicit_interests else 0.0
+        country_score = 2.75 if article.country in explicit_country_codes else 0.0
         explicit_keyword_score = sum(
             0.35 for keyword in article.keywords if keyword in explicit_interest_terms
         )
@@ -220,6 +300,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
 
         score = (
             explicit_score
+            + country_score
             + explicit_keyword_score
             + preference_score
             + keyword_score
@@ -229,14 +310,16 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
             + embedding_similarity_score
             - negative_penalty
         )
-        if (
-            score <= 0
-            and article.primary_category not in explicit_interests
-            and explicit_keyword_score <= 0
+        if score <= 0 and not (
+            article.primary_category in explicit_interests
+            or article.country in explicit_country_codes
+            or explicit_keyword_score > 0
         ):
             continue
 
-        if explicit_score > 0:
+        if country_score > 0:
+            reason = "country-match"
+        elif explicit_score > 0:
             reason = "interest-match"
         elif explicit_keyword_score > 0:
             reason = "keyword-match"
@@ -267,6 +350,7 @@ def rerank_with_constraints(
         for token in interest.replace("-", " ").split()
         if token
     }
+    explicit_country_codes = get_explicit_country_codes(explicit_interests)
     remaining = sorted(
         ranked_articles,
         key=lambda item: (
@@ -275,6 +359,7 @@ def rerank_with_constraints(
                 item,
                 explicit_interests=explicit_interests,
                 explicit_interest_terms=explicit_interest_terms,
+                explicit_country_codes=explicit_country_codes,
             ),
             -item.score,
         ),
@@ -306,6 +391,7 @@ def rerank_with_constraints(
                 item,
                 explicit_interests=explicit_interests,
                 explicit_interest_terms=explicit_interest_terms,
+                explicit_country_codes=explicit_country_codes,
             )
 
             adjusted_score = item.score
@@ -331,6 +417,8 @@ def rerank_with_constraints(
                     adjusted_score -= 0.9
             if category in explicit_interests:
                 adjusted_score += 0.2
+            if article.country in explicit_country_codes:
+                adjusted_score += 0.35
 
             if selected_keywords:
                 max_similarity = max(

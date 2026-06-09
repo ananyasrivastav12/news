@@ -39,6 +39,13 @@ class InteractionType(enum.Enum):
     SAVE = "save"
 
 
+class PipelineRunStatus(enum.Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -98,6 +105,7 @@ class Article(Base):
     normalized_title = Column(String, index=True, nullable=False)
     original_url = Column(String, unique=True, nullable=False)
     source = Column(String, index=True)
+    country = Column(String, index=True, nullable=False, default="us")
     description = Column(Text)
     content = Column(Text)
     raw_text = Column(Text)
@@ -119,6 +127,9 @@ class Article(Base):
     )
     interactions = relationship("UserArticleInteraction", back_populates="article")
     flashcards = relationship("Flashcard", back_populates="article")
+    summary_reviews = relationship(
+        "SummaryReview", back_populates="article", cascade="all, delete-orphan"
+    )
 
 
 class Summary(Base):
@@ -134,6 +145,7 @@ class Summary(Base):
 
     article = relationship("Article", back_populates="summary")
     flashcards = relationship("Flashcard", back_populates="summary")
+    reviews = relationship("SummaryReview", back_populates="summary")
 
 
 class Flashcard(Base):
@@ -226,3 +238,87 @@ class UserEmbeddingProfile(Base):
     )
 
     user = relationship("User", back_populates="embedding_profile")
+
+
+class PipelineRun(Base):
+    __tablename__ = "pipeline_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_type = Column(String, nullable=False, index=True)
+    status = Column(
+        Enum(PipelineRunStatus),
+        nullable=False,
+        default=PipelineRunStatus.QUEUED,
+        index=True,
+    )
+    started_at = Column(DateTime(timezone=True))
+    finished_at = Column(DateTime(timezone=True))
+    duration_seconds = Column(Float)
+    fetched_count = Column(Integer, nullable=False, default=0)
+    inserted_count = Column(Integer, nullable=False, default=0)
+    duplicates_skipped_count = Column(Integer, nullable=False, default=0)
+    invalid_skipped_count = Column(Integer, nullable=False, default=0)
+    summarized_count = Column(Integer, nullable=False, default=0)
+    summary_failed_count = Column(Integer, nullable=False, default=0)
+    embedded_count = Column(Integer, nullable=False, default=0)
+    feed_items_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text)
+    metadata_json = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    logs = relationship(
+        "PipelineRunLog", back_populates="pipeline_run", cascade="all, delete-orphan"
+    )
+
+
+class PipelineRunLog(Base):
+    __tablename__ = "pipeline_run_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    pipeline_run_id = Column(Integer, ForeignKey("pipeline_runs.id"), nullable=False)
+    level = Column(String, nullable=False, default="info")
+    message = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    pipeline_run = relationship("PipelineRun", back_populates="logs")
+
+
+class SummaryReview(Base):
+    __tablename__ = "summary_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    article_id = Column(Integer, ForeignKey("articles.id"), nullable=False, index=True)
+    summary_id = Column(Integer, ForeignKey("summaries.id"), nullable=True, index=True)
+    reviewer_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    rating = Column(String, nullable=False)
+    issue_type = Column(String)
+    notes = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    article = relationship("Article", back_populates="summary_reviews")
+    summary = relationship("Summary", back_populates="reviews")
+    reviewer = relationship("User")
+
+
+class PipelineSchedule(Base):
+    __tablename__ = "pipeline_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True)
+    schedule_type = Column(String, nullable=False, default="full_pipeline")
+    hour = Column(Integer, nullable=False, default=7)
+    minute = Column(Integer, nullable=False, default=0)
+    countries = Column(JSON, nullable=False, default=list)
+    categories = Column(JSON, nullable=False, default=list)
+    article_target = Column(Integer)
+    summary_limit = Column(Integer)
+    force_feeds = Column(Boolean, nullable=False, default=True)
+    last_run_at = Column(DateTime(timezone=True))
+    next_run_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

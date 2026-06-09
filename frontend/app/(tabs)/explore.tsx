@@ -1,7 +1,10 @@
+import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -15,15 +18,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppSession } from '@/context/AppSessionContext';
 import {
   Interest,
+  ProfileSummary,
   SavedArticle,
   createUser,
   fetchInterests,
   fetchMyInterests,
+  fetchProfileSummary,
   fetchSavedArticles,
-  generateMyFeed,
   login,
+  loginWithGoogle,
   updateInterests,
 } from '@/lib/api';
+
+WebBrowser.maybeCompleteAuthSession();
 
 type Step = 'account' | 'interests' | 'ready';
 type Tone = 'info' | 'success' | 'error';
@@ -37,10 +44,34 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.';
 }
 
+function getArticleUrl(article: SavedArticle) {
+  const articleUrl = article.url ?? article.original_url;
+  return typeof articleUrl === 'string' && articleUrl.length > 0
+    ? articleUrl
+    : null;
+}
+
+function isCredentialError(message: string) {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes('could not validate credentials') ||
+    normalized.includes('not authenticated') ||
+    normalized.includes('invalid token') ||
+    normalized.includes('401')
+  );
+}
+
 export default function SetupScreen() {
   const router = useRouter();
-  const { accessToken, apiBaseUrl, setAccessToken, userEmail, setUserEmail } =
-    useAppSession();
+  const {
+    accessToken,
+    apiBaseUrl,
+    clearSession,
+    sessionReady,
+    setAccessToken,
+    userEmail,
+    setUserEmail,
+  } = useAppSession();
   const [password, setPassword] = useState('TestPassword123');
   const [interests, setInterests] = useState<Interest[]>([]);
   const [selectedInterestIds, setSelectedInterestIds] = useState<number[]>([]);
@@ -51,6 +82,18 @@ export default function SetupScreen() {
     text: 'Start with an account. After that, you will pick topics and build your first feed.',
   });
   const [savedArticles, setSavedArticles] = useState<SavedArticle[]>([]);
+  const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
+  const routeToFeedAfterAuth = useRef(false);
+  const googleAuthConfigured = Boolean(
+    process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ||
+      process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ||
+      process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
+  );
+  const [googleRequest, googleResponse, promptGoogleAuth] = Google.useAuthRequest({
+    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
+    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
+    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
+  });
 
   const newsInterests = useMemo(
     () => interests.filter((interest) => interest.source_type === 'news'),
@@ -66,6 +109,19 @@ export default function SetupScreen() {
   const showStatus = useCallback((tone: Tone, text: string) => {
     setStatus({ tone, text });
   }, []);
+
+  const handleLogout = useCallback(
+    (message = 'Signed out. Choose a login method to continue.') => {
+      clearSession();
+      setSelectedInterestIds([]);
+      setSavedArticles([]);
+      setProfileSummary(null);
+      setStep('account');
+      routeToFeedAfterAuth.current = false;
+      showStatus('info', message);
+    },
+    [clearSession, showStatus]
+  );
 
   const loadInterests = useCallback(async () => {
     addLog('Loading interests');
@@ -98,6 +154,10 @@ export default function SetupScreen() {
       if (selected.length > 0) {
         setStep('ready');
         showStatus('success', `Welcome back. Your profile is tuned to ${selected.length} topics.`);
+        if (routeToFeedAfterAuth.current) {
+          routeToFeedAfterAuth.current = false;
+          router.replace('/');
+        }
       } else {
         setStep('interests');
         showStatus('info', 'Choose a few topics once, then your profile will remember them.');
@@ -106,10 +166,14 @@ export default function SetupScreen() {
     } catch (error) {
       const message = getErrorMessage(error);
       addLog(`Saved interests failed: ${message}`);
+      if (isCredentialError(message)) {
+        handleLogout('Your session expired. Please log in again.');
+        return [];
+      }
       showStatus('error', `Could not load your profile interests: ${message}`);
       return [];
     }
-  }, [accessToken, addLog, apiBaseUrl, showStatus]);
+  }, [accessToken, addLog, apiBaseUrl, handleLogout, router, showStatus]);
 
   useEffect(() => {
     if (accessToken) {
@@ -127,13 +191,42 @@ export default function SetupScreen() {
       setSavedArticles(articles);
       addLog(`Loaded ${articles.length} saved articles`);
     } catch (error) {
-      addLog(`Saved articles failed: ${getErrorMessage(error)}`);
+      const message = getErrorMessage(error);
+      addLog(`Saved articles failed: ${message}`);
+      if (isCredentialError(message)) {
+        handleLogout('Your session expired. Please log in again.');
+      }
     }
-  }, [accessToken, addLog, apiBaseUrl]);
+  }, [accessToken, addLog, apiBaseUrl, handleLogout]);
 
   useEffect(() => {
     void loadSavedArticles();
   }, [loadSavedArticles]);
+
+  const loadProfileSummary = useCallback(async () => {
+    if (!accessToken) {
+      setProfileSummary(null);
+      return;
+    }
+    try {
+      const summary = await fetchProfileSummary(apiBaseUrl, accessToken);
+      setProfileSummary(summary);
+      addLog(
+        `Profile stats loaded: ${summary.signal_counts.viewed} views, ` +
+          `${summary.today_feed.unread} unread cards`
+      );
+    } catch (error) {
+      const message = getErrorMessage(error);
+      addLog(`Profile summary failed: ${message}`);
+      if (isCredentialError(message)) {
+        handleLogout('Your session expired. Please log in again.');
+      }
+    }
+  }, [accessToken, addLog, apiBaseUrl, handleLogout]);
+
+  useEffect(() => {
+    void loadProfileSummary();
+  }, [loadProfileSummary]);
 
   function toggleInterest(id: number) {
     setSelectedInterestIds((current) =>
@@ -144,10 +237,49 @@ export default function SetupScreen() {
   async function loginAndContinue(email: string) {
     addLog(`Logging in ${email}`);
     const response = await login(apiBaseUrl, { email, password });
+    routeToFeedAfterAuth.current = true;
     setAccessToken(response.access_token);
+    setUserEmail(response.email || email);
     showStatus('success', 'You are in. Loading your profile now.');
     addLog(`Logged in ${email}`);
   }
+
+  useEffect(() => {
+    async function finishGoogleLogin(idToken: string) {
+      setLoading(true);
+      try {
+        addLog('Logging in with Google');
+        const response = await loginWithGoogle(apiBaseUrl, { id_token: idToken });
+        routeToFeedAfterAuth.current = true;
+        setAccessToken(response.access_token);
+        if (response.email) {
+          setUserEmail(response.email);
+        }
+        showStatus('success', 'Google sign-in complete. Loading your profile now.');
+      } catch (error) {
+        const message = getErrorMessage(error);
+        addLog(`Google login failed: ${message}`);
+        showStatus('error', `Could not sign in with Google: ${message}`);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (googleResponse?.type !== 'success') return;
+    const idToken = googleResponse.authentication?.idToken;
+    if (!idToken) {
+      showStatus('error', 'Google did not return an ID token.');
+      return;
+    }
+    void finishGoogleLogin(idToken);
+  }, [
+    addLog,
+    apiBaseUrl,
+    googleResponse,
+    setAccessToken,
+    setUserEmail,
+    showStatus,
+  ]);
 
   async function handleCreateUser() {
     const email = userEmail.trim();
@@ -211,8 +343,10 @@ export default function SetupScreen() {
       addLog(`Saving ${selectedInterestIds.length} interests`);
       const saved = await updateInterests(apiBaseUrl, accessToken, selectedInterestIds);
       setStep('ready');
-      showStatus('success', `Saved ${saved.length} topics. Now build your first brief.`);
-      addLog(`Saved ${saved.length} interests`);
+      showStatus('success', `Saved ${saved.length} topics. Your feed was rebuilt.`);
+      addLog(`Saved ${saved.length} interests and rebuilt the feed`);
+      await loadProfileSummary();
+      router.replace('/');
     } catch (error) {
       const message = getErrorMessage(error);
       addLog(`Save interests failed: ${message}`);
@@ -222,38 +356,17 @@ export default function SetupScreen() {
     }
   }
 
-  async function handleGenerateFeed() {
-    if (!accessToken) {
-      showStatus('error', 'Log in first, then generate your feed.');
-      setStep('account');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      addLog('Generating feed');
-      const response = await generateMyFeed(apiBaseUrl, accessToken);
-      addLog(response.message);
-      if (response.items.length === 0) {
-        showStatus(
-          'info',
-          'No summarized articles exist yet. Run the news pipeline, then generate again.'
-        );
-      } else {
-        showStatus('success', response.message);
-        router.replace('/');
-      }
-    } catch (error) {
-      const message = getErrorMessage(error);
-      addLog(`Generate feed failed: ${message}`);
-      showStatus('error', `Could not generate feed: ${message}`);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   const canPickInterests = step === 'interests' || step === 'ready';
-  const canGenerate = step === 'ready';
+
+  if (!sessionReady) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.loadingCenter}>
+          <ActivityIndicator size="large" color="#1268ff" />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -272,7 +385,7 @@ export default function SetupScreen() {
               ? 'Sign in first. The app will move you forward when the backend confirms it.'
               : step === 'interests'
                 ? 'Tap a few topics that should shape your morning cards.'
-                : 'Manage interests, generate your real feed, and revisit saved stories.'}
+                : 'Manage interests, check personalization signals, and revisit saved stories.'}
           </Text>
         </View>
 
@@ -302,6 +415,15 @@ export default function SetupScreen() {
         <View style={[styles.statusCard, styles[`status_${status.tone}`]]}>
           {loading ? <ActivityIndicator color="#1268ff" /> : null}
           <Text style={styles.statusText}>{status.text}</Text>
+          {accessToken ? (
+            <Pressable
+              disabled={loading}
+              style={styles.inlineStatusButton}
+              onPress={() => handleLogout()}
+            >
+              <Text style={styles.inlineStatusButtonText}>Sign out</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {step === 'account' ? (
@@ -349,6 +471,23 @@ export default function SetupScreen() {
                 <Text style={styles.secondaryButtonText}>Log in</Text>
               </Pressable>
             </View>
+            <Pressable
+              disabled={!googleAuthConfigured || !googleRequest || loading}
+              style={({ pressed }) => [
+                styles.googleButton,
+                pressed && styles.buttonPressed,
+                (!googleAuthConfigured || !googleRequest || loading) &&
+                  styles.buttonDisabled,
+              ]}
+              onPress={() => void promptGoogleAuth()}
+            >
+              <Text style={styles.googleButtonText}>Continue with Google</Text>
+            </Pressable>
+            {!googleAuthConfigured ? (
+              <Text style={styles.authHint}>
+                Add Google OAuth client IDs to enable Google sign-in.
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -405,23 +544,78 @@ export default function SetupScreen() {
           </View>
         ) : null}
 
-        {canGenerate ? (
+        {accessToken && profileSummary ? (
           <View style={styles.panel}>
-            <Text style={styles.sectionTitle}>Brief</Text>
-            <Text style={styles.bodyText}>
-              Real cards need ingested and summarized articles from the backend pipeline.
-            </Text>
-            <Pressable
-              disabled={loading}
-              style={({ pressed }) => [
-                styles.fullButton,
-                pressed && styles.buttonPressed,
-                loading && styles.buttonDisabled,
-              ]}
-              onPress={() => void handleGenerateFeed()}
-            >
-              <Text style={styles.primaryButtonText}>Generate feed</Text>
-            </Pressable>
+            <View style={styles.panelHeader}>
+              <View>
+                <Text style={styles.sectionTitle}>Personalization</Text>
+                <Text style={styles.sectionHint}>
+                  {profileSummary.today_feed.unread} unread of{' '}
+                  {profileSummary.today_feed.total} cards
+                </Text>
+              </View>
+              <Pressable
+                disabled={loading}
+                style={styles.smallButton}
+                onPress={() => void loadProfileSummary()}
+              >
+                <Text style={styles.smallButtonText}>Refresh</Text>
+              </Pressable>
+            </View>
+            <View style={styles.statGrid}>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.today_feed.explicit_interest_matches}
+                </Text>
+                <Text style={styles.statLabel}>interest matches</Text>
+              </View>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.signal_counts.viewed}
+                </Text>
+                <Text style={styles.statLabel}>viewed</Text>
+              </View>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.signal_counts.liked}
+                </Text>
+                <Text style={styles.statLabel}>liked</Text>
+              </View>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.signal_counts.disliked}
+                </Text>
+                <Text style={styles.statLabel}>disliked</Text>
+              </View>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.signal_counts.saved}
+                </Text>
+                <Text style={styles.statLabel}>saved</Text>
+              </View>
+              <View style={styles.statTile}>
+                <Text style={styles.statValue}>
+                  {profileSummary.signal_counts.clicked}
+                </Text>
+                <Text style={styles.statLabel}>opened</Text>
+              </View>
+            </View>
+            {profileSummary.today_feed.total > 0 &&
+            profileSummary.today_feed.explicit_interest_matches === 0 ? (
+              <Pressable
+                style={styles.warningCard}
+                onPress={() =>
+                  Alert.alert(
+                    'Low category coverage',
+                    'Your selected categories do not have matching summarized stories in today’s article pool yet. Run the daily pipeline or add another interest to widen the feed.'
+                  )
+                }
+              >
+                <Text style={styles.warningText}>
+                  Low coverage for your selected interests
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : null}
 
@@ -447,7 +641,12 @@ export default function SetupScreen() {
                 <Pressable
                   key={article.id}
                   style={styles.savedArticle}
-                  onPress={() => void Linking.openURL(article.url)}
+                  onPress={() => {
+                    const articleUrl = getArticleUrl(article);
+                    if (articleUrl) {
+                      void Linking.openURL(articleUrl);
+                    }
+                  }}
                 >
                   <Text style={styles.savedTitle}>{article.title}</Text>
                   <Text style={styles.savedMeta}>{article.source || article.primary_category}</Text>
@@ -471,6 +670,11 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     padding: 22,
     gap: 16,
+  },
+  loadingCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   hero: {
     gap: 8,
@@ -544,6 +748,20 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontWeight: '700',
   },
+  inlineStatusButton: {
+    alignSelf: 'flex-start',
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#d8dde8',
+  },
+  inlineStatusButtonText: {
+    color: '#0b4fd6',
+    fontSize: 13,
+    fontWeight: '900',
+  },
   panel: {
     backgroundColor: '#ffffff',
     borderRadius: 20,
@@ -576,6 +794,42 @@ const styles = StyleSheet.create({
     color: '#3b414b',
     fontSize: 15,
     lineHeight: 22,
+  },
+  statGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  statTile: {
+    width: '30%',
+    minWidth: 92,
+    borderRadius: 16,
+    backgroundColor: '#f4f7fb',
+    padding: 12,
+    gap: 3,
+  },
+  statValue: {
+    color: '#08090a',
+    fontSize: 22,
+    fontWeight: '900',
+  },
+  statLabel: {
+    color: '#6b7280',
+    fontSize: 11,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  warningCard: {
+    borderRadius: 16,
+    backgroundColor: '#fff7ed',
+    borderWidth: 1,
+    borderColor: '#fed7aa',
+    padding: 13,
+  },
+  warningText: {
+    color: '#9a3412',
+    fontSize: 14,
+    fontWeight: '800',
   },
   input: {
     borderRadius: 15,
@@ -642,6 +896,25 @@ const styles = StyleSheet.create({
     color: '#0b4fd6',
     fontSize: 15,
     fontWeight: '900',
+  },
+  googleButton: {
+    minHeight: 54,
+    borderRadius: 16,
+    backgroundColor: '#08090a',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  googleButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  authHint: {
+    color: '#6b7280',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '700',
   },
   chipWrap: {
     flexDirection: 'row',

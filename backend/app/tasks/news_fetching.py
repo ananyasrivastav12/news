@@ -32,27 +32,38 @@ def _get_batch_categories() -> list[str]:
     ]
 
 
+def _get_batch_countries() -> list[str]:
+    return settings.news_api_countries
+
+
 async def _async_ingest_news(db: Session) -> dict[str, int]:
     service = NewsApiService()
     categories = _get_batch_categories()
+    countries = _get_batch_countries()
     fetched = 0
     inserted = 0
     target = max(1, settings.NEWS_DAILY_ARTICLE_TARGET)
 
-    for category in categories:
-        articles = await service.fetch_top_headlines(category=category)
-        fetched += len(articles)
-        for raw_article in articles:
+    for country in countries:
+        for category in categories:
+            articles = await service.fetch_top_headlines(
+                category=category,
+                country=country,
+            )
+            fetched += len(articles)
+            for raw_article in articles:
+                if inserted >= target:
+                    break
+                if not is_valid_article(raw_article):
+                    continue
+                normalized = normalize_article(raw_article, category)
+                if is_duplicate_article(db, normalized):
+                    continue
+                upsert_article(db, normalized)
+                inserted += 1
+            db.commit()
             if inserted >= target:
                 break
-            if not is_valid_article(raw_article):
-                continue
-            normalized = normalize_article(raw_article, category)
-            if is_duplicate_article(db, normalized):
-                continue
-            upsert_article(db, normalized)
-            inserted += 1
-        db.commit()
         if inserted >= target:
             break
 
@@ -62,6 +73,8 @@ async def _async_ingest_news(db: Session) -> dict[str, int]:
         "inserted": inserted,
         "target": target,
         "pruned": pruned,
+        "countries": len(countries),
+        "requests_planned": len(countries) * len(categories),
     }
 
 
@@ -313,17 +326,31 @@ def backfill_interest_based_news_task() -> dict[str, int]:
                     if interest_name in _get_batch_categories()
                     else "general"
                 )
-                articles = asyncio.run(
-                    service.fetch_top_headlines(category=category, query=interest_name)
+                countries = (
+                    ["in"]
+                    if interest_name == "india"
+                    else (
+                        ["us"]
+                        if interest_name in {"united states", "us", "usa"}
+                        else _get_batch_countries()
+                    )
                 )
-                for raw_article in articles:
-                    if not is_valid_article(raw_article):
-                        continue
-                    normalized = normalize_article(raw_article, category)
-                    if is_duplicate_article(db, normalized):
-                        continue
-                    upsert_article(db, normalized)
-                    inserted += 1
+                for country in countries:
+                    articles = asyncio.run(
+                        service.fetch_top_headlines(
+                            category=category,
+                            country=country,
+                            query=interest_name,
+                        )
+                    )
+                    for raw_article in articles:
+                        if not is_valid_article(raw_article):
+                            continue
+                        normalized = normalize_article(raw_article, category)
+                        if is_duplicate_article(db, normalized):
+                            continue
+                        upsert_article(db, normalized)
+                        inserted += 1
             db.commit()
         return {"inserted": inserted}
     finally:

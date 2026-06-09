@@ -1,5 +1,13 @@
 import Constants from 'expo-constants';
-import React, { createContext, useContext, useMemo, useState } from 'react';
+import * as SecureStore from 'expo-secure-store';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { Platform } from 'react-native';
 
 type SessionState = {
@@ -9,9 +17,13 @@ type SessionState = {
   setAccessToken: (value: string | null) => void;
   userEmail: string;
   setUserEmail: (value: string) => void;
+  clearSession: () => void;
+  sessionReady: boolean;
 };
 
 const AppSessionContext = createContext<SessionState | null>(null);
+const ACCESS_TOKEN_KEY = 'news.accessToken';
+const USER_EMAIL_KEY = 'news.userEmail';
 
 function getDefaultApiBaseUrl() {
   const hostUri = Constants.expoConfig?.hostUri;
@@ -30,17 +42,115 @@ export function AppSessionProvider({ children }: { children: React.ReactNode }) 
   const [apiBaseUrl, setApiBaseUrl] = useState(getDefaultApiBaseUrl());
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState('');
+  const [sessionReady, setSessionReady] = useState(false);
+
+  useEffect(() => {
+    async function restoreSession() {
+      try {
+        const secureStoreAvailable = await SecureStore.isAvailableAsync();
+        if (!secureStoreAvailable) {
+          return;
+        }
+        const [storedToken, storedEmail] = await Promise.all([
+          SecureStore.getItemAsync(ACCESS_TOKEN_KEY),
+          SecureStore.getItemAsync(USER_EMAIL_KEY),
+        ]);
+        if (storedToken) {
+          setAccessToken(storedToken);
+        }
+        if (storedEmail) {
+          setUserEmail(storedEmail);
+        }
+      } catch (error) {
+        console.log(
+          `[session] restore failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`
+        );
+      } finally {
+        setSessionReady(true);
+      }
+    }
+
+    void restoreSession();
+  }, []);
+
+  const updateAccessToken = useCallback((value: string | null) => {
+    setAccessToken(value);
+    void SecureStore.isAvailableAsync()
+      .then((available) => {
+        if (!available) return undefined;
+        return value
+          ? SecureStore.setItemAsync(ACCESS_TOKEN_KEY, value)
+          : SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY);
+      })
+      .catch((error) => {
+        console.log(
+          `[session] token persist failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`
+        );
+      });
+  }, []);
+
+  const updateUserEmail = useCallback((value: string) => {
+    setUserEmail(value);
+    void SecureStore.isAvailableAsync()
+      .then((available) => {
+        if (!available) return undefined;
+        return value
+          ? SecureStore.setItemAsync(USER_EMAIL_KEY, value)
+          : SecureStore.deleteItemAsync(USER_EMAIL_KEY);
+      })
+      .catch((error) => {
+        console.log(
+          `[session] email persist failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`
+        );
+      });
+  }, []);
+
+  const clearSession = useCallback(() => {
+    setAccessToken(null);
+    setUserEmail('');
+    void SecureStore.isAvailableAsync()
+      .then((available) => {
+        if (!available) return undefined;
+        return Promise.all([
+          SecureStore.deleteItemAsync(ACCESS_TOKEN_KEY),
+          SecureStore.deleteItemAsync(USER_EMAIL_KEY),
+        ]);
+      })
+      .catch((error) => {
+        console.log(
+          `[session] clear failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`
+        );
+      });
+  }, []);
 
   const value = useMemo(
     () => ({
       apiBaseUrl,
       setApiBaseUrl,
       accessToken,
-      setAccessToken,
+      setAccessToken: updateAccessToken,
       userEmail,
-      setUserEmail,
+      setUserEmail: updateUserEmail,
+      clearSession,
+      sessionReady,
     }),
-    [accessToken, apiBaseUrl, userEmail]
+    [
+      accessToken,
+      apiBaseUrl,
+      clearSession,
+      sessionReady,
+      updateAccessToken,
+      updateUserEmail,
+      userEmail,
+    ]
   );
 
   return (

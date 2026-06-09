@@ -26,6 +26,8 @@ NEWS_INTERESTS = [
     "Politics",  # As requested
     "Crime",  # As requested
     "World",  # As requested
+    "United States",
+    "India",
 ]
 
 WIKI_INTERESTS = [

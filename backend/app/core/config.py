@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     NEWS_API_KEY: str = Field(validation_alias="NEWS_API_KEY")
     NEWS_API_BASE_URL: str = Field(default="https://newsapi.org/v2")
     NEWS_API_COUNTRY: str = Field(default="us")
+    NEWS_API_COUNTRIES: str = Field(default="us,in")
     NEWS_API_PAGE_SIZE: int = Field(default=100)
     NEWS_DAILY_ARTICLE_TARGET: int = Field(default=250)
     ARTICLE_POOL_LIMIT: int = Field(default=500)
@@ -30,6 +31,9 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = Field(default="gpt-4.1-mini")
     OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
 
+    GOOGLE_CLIENT_IDS: str = Field(default="")
+    ADMIN_EMAILS: str = Field(default="")
+
     REDIS_URL: str = Field(default="redis://redis:6379/0")
     BACKEND_CORS_ORIGINS: str = Field(default="*")
 
@@ -44,6 +48,33 @@ class Settings(BaseSettings):
             for origin in self.BACKEND_CORS_ORIGINS.split(",")
             if origin.strip()
         ]
+
+    @property
+    def google_client_ids(self) -> list[str]:
+        return [
+            client_id.strip()
+            for client_id in self.GOOGLE_CLIENT_IDS.split(",")
+            if client_id.strip()
+        ]
+
+    @property
+    def admin_emails(self) -> set[str]:
+        return {
+            email.strip().lower()
+            for email in self.ADMIN_EMAILS.split(",")
+            if email.strip()
+        }
+
+    @property
+    def news_api_countries(self) -> list[str]:
+        configured = [
+            country.strip().lower()
+            for country in self.NEWS_API_COUNTRIES.split(",")
+            if country.strip()
+        ]
+        if configured:
+            return configured
+        return [self.NEWS_API_COUNTRY.lower()]
 
 
 settings = Settings()

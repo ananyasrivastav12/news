@@ -79,7 +79,11 @@ def trigger_article_embeddings(limit: int = Query(default=200, ge=1, le=1000)):
     return {"message": "Article embedding task queued.", "task_id": async_result.id}
 
 
-@router.get("/users/me/feed", response_model=list[news_schema.FeedItem])
+@router.get(
+    "/users/me/feed",
+    response_model=list[news_schema.FeedItem],
+    response_model_by_alias=False,
+)
 def read_my_feed(
     feed_date: date | None = None,
     force_refresh: bool = Query(default=False),
@@ -104,7 +108,11 @@ def read_my_feed(
     return flashcards
 
 
-@router.get("/users/me/saved-articles", response_model=list[news_schema.FeedArticle])
+@router.get(
+    "/users/me/saved-articles",
+    response_model=list[news_schema.FeedArticle],
+    response_model_by_alias=False,
+)
 def read_saved_articles(
     db: Session = Depends(get_db),
     current_user: db_model.User = Depends(get_current_user),

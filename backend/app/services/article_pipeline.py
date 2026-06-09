@@ -124,6 +124,7 @@ class NormalizedArticle:
     normalized_title: str
     original_url: str
     source: str | None
+    country: str
     description: str | None
     content: str | None
     raw_text: str
@@ -248,6 +249,7 @@ def normalize_article(raw_article: dict[str, Any], category: str) -> NormalizedA
         normalized_title=normalized_title,
         original_url=(raw_article.get("url") or "").strip(),
         source=clean_text(raw_article.get("source")) or None,
+        country=(raw_article.get("country") or settings.NEWS_API_COUNTRY).lower(),
         description=description or None,
         content=content or None,
         raw_text=raw_text,
@@ -319,6 +321,7 @@ def upsert_article(db: Session, article: NormalizedArticle) -> db_model.Article:
         normalized_title=article.normalized_title,
         original_url=article.original_url,
         source=article.source,
+        country=article.country,
         description=article.description,
         content=article.content,
         raw_text=article.raw_text,

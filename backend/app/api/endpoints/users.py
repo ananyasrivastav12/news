@@ -1,13 +1,18 @@
 # In app/api/endpoints/users.py
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
 from app.crud import interest as crud_interest
 from app.crud import user as crud_user  # <--- CHANGED
+from app.db import model as db_model
 from app.schemas import interest as interest_schema
 from app.schemas import user as user_schema
+from app.services.recommendations import get_explicit_country_codes
 
 router = APIRouter()
 
@@ -43,3 +48,62 @@ def read_my_interests(
     current_user=Depends(get_current_user),
 ):
     return crud_interest.get_user_interests(db, user_id=current_user.id)
+
+
+@router.get("/users/me/profile-summary", response_model=user_schema.ProfileSummary)
+def read_profile_summary(
+    db: Session = Depends(get_db),
+    current_user: db_model.User = Depends(get_current_user),
+):
+    selected_interests = crud_interest.get_user_interests(db, user_id=current_user.id)
+    selected_categories = {
+        interest.name.lower()
+        for interest in selected_interests
+        if interest.source_type == db_model.SourceType.NEWS
+    }
+    selected_country_codes = get_explicit_country_codes(selected_categories)
+
+    signal_counts = {
+        interaction_type.value: count
+        for interaction_type, count in db.query(
+            db_model.UserArticleInteraction.interaction_type,
+            func.count(db_model.UserArticleInteraction.id),
+        )
+        .filter(db_model.UserArticleInteraction.user_id == current_user.id)
+        .group_by(db_model.UserArticleInteraction.interaction_type)
+        .all()
+    }
+
+    today = date.today()
+    flashcards = (
+        db.query(db_model.Flashcard)
+        .join(db_model.Article)
+        .filter(
+            db_model.Flashcard.user_id == current_user.id,
+            db_model.Flashcard.feed_date == today,
+        )
+        .all()
+    )
+    explicit_matches = sum(
+        1
+        for flashcard in flashcards
+        if flashcard.article.primary_category in selected_categories
+        or flashcard.article.country in selected_country_codes
+    )
+    unread_count = sum(1 for flashcard in flashcards if not flashcard.is_viewed)
+
+    return user_schema.ProfileSummary(
+        interests=[interest.name for interest in selected_interests],
+        signal_counts=user_schema.ProfileSignalCounts(
+            viewed=signal_counts.get(db_model.InteractionType.VIEW.value, 0),
+            liked=signal_counts.get(db_model.InteractionType.LIKE.value, 0),
+            disliked=signal_counts.get(db_model.InteractionType.SKIP.value, 0),
+            saved=signal_counts.get(db_model.InteractionType.SAVE.value, 0),
+            clicked=signal_counts.get(db_model.InteractionType.CLICK.value, 0),
+        ),
+        today_feed=user_schema.FeedProfileStats(
+            total=len(flashcards),
+            unread=unread_count,
+            explicit_interest_matches=explicit_matches,
+        ),
+    )
