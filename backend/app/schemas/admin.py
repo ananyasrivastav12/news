@@ -1,7 +1,27 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class AdminUserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=1024)
+
+
+class AdminUserCreated(BaseModel):
+    id: int
+    email: EmailStr
+    interests: list[str]
+
+
+class AdminFeedGenerationRequest(BaseModel):
+    edition_type: str = "all"
+    market_timezone: str = "America/New_York"
+    feed_date: str | None = None
+    force_refresh: bool = True
+    summarize_first: bool = False
+    run_ingestion_first: bool = False
 
 
 class PipelineRunLogOut(BaseModel):
@@ -45,18 +65,24 @@ class PipelineRunQueued(BaseModel):
 class AdminOverview(BaseModel):
     total_articles: int
     fresh_articles: int
+    pending_summaries: int
     completed_summaries: int
     failed_summaries: int
     feed_items_generated: int
     users_with_feeds: int
     total_users: int
+    current_feed_size: int
+    article_pool_limit: int
+    max_feed_items: int
     viewed_count: int
     liked_count: int
     disliked_count: int
     saved_count: int
     newsapi_requests_planned: int
+    newsapi_page_size: int
     newsapi_daily_target: int
     openai_summary_calls_planned: int
+    openai_daily_summary_limit: int
     openai_embedding_calls_planned: int
     last_successful_run_at: datetime | None = None
     next_scheduled_run_at: datetime | None = None
@@ -100,6 +126,9 @@ class AdminUserOut(BaseModel):
 
 
 class UserFeedItemOut(BaseModel):
+    feed_date: str
+    edition_type: str
+    market_timezone: str
     rank_position: int
     article_id: int
     title: str

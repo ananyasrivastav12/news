@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api.dependencies import get_db
+from app.core.security import get_password_hash
 from app.db.model import Base, Flashcard, Interest, SourceType, User
 from app.main import app
 from app.tasks.news_fetching import _build_user_feed
@@ -43,6 +44,10 @@ def setup_function():
             [
                 Interest(name="Technology", source_type=SourceType.NEWS),
                 Interest(name="Business", source_type=SourceType.NEWS),
+                User(
+                    email="reader@example.com",
+                    hashed_password=get_password_hash("TestPassword123"),
+                ),
             ]
         )
         db.commit()
@@ -53,12 +58,11 @@ def setup_function():
 def test_frontend_setup_and_feed_contract():
     client = TestClient(app)
 
-    create_response = client.post(
+    public_signup_response = client.post(
         "/api/users/",
-        json={"email": "reader@example.com", "password": "TestPassword123"},
+        json={"email": "new-reader@example.com", "password": "TestPassword123"},
     )
-    assert create_response.status_code == 201
-    assert create_response.json()["email"] == "reader@example.com"
+    assert public_signup_response.status_code == 403
 
     login_response = client.post(
         "/api/login/access-token",

@@ -44,7 +44,7 @@ class ArticleSummarizer:
             "Use 2 to 4 short sentences. Lead with the actual news, include the most important "
             "context, and avoid vague phrases like 'this article discusses' or 'the story highlights'. "
             "Do not repeat the headline verbatim, do not include the source name unless it is central "
-            "to the story, and do not end mid-thought. "
+            "to the story, and do not end mid-thought. Do not use ellipses. "
             "Return JSON with keys main_takeaway and supporting_lines. "
             "main_takeaway must be the full paragraph. "
             "supporting_lines must be an empty array.\n\n"
@@ -146,7 +146,9 @@ class ArticleSummarizer:
     def _shape_summary(
         self, main_takeaway: str, supporting_lines: list[str], *, model_name: str
     ) -> dict[str, Any]:
-        cleaned_main = self._fit_paragraph(" ".join(main_takeaway.split()))
+        cleaned_main = self._fit_paragraph(
+            self._drop_truncated_sentences(" ".join(main_takeaway.split()))
+        )
         summary_text = cleaned_main.strip()
         return {
             "main_takeaway": cleaned_main,
@@ -154,6 +156,21 @@ class ArticleSummarizer:
             "summary_text": summary_text,
             "model_name": model_name,
         }
+
+    @staticmethod
+    def _drop_truncated_sentences(text: str) -> str:
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return text
+
+        complete_sentences = [
+            sentence
+            for sentence in ArticleSummarizer._split_sentences(text)
+            if "..." not in sentence and "…" not in sentence
+        ]
+        if complete_sentences:
+            return " ".join(complete_sentences)
+        return text.replace("...", ".").replace("…", ".")
 
     @staticmethod
     def _fit_paragraph(text: str, *, max_chars: int = 420) -> str:

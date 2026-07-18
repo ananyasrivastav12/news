@@ -151,7 +151,22 @@ class Summary(Base):
 class Flashcard(Base):
     __tablename__ = "flashcards"
     __table_args__ = (
-        UniqueConstraint("user_id", "feed_date", "article_id", name="uq_feed_article"),
+        UniqueConstraint(
+            "user_id",
+            "feed_date",
+            "edition_type",
+            "market_timezone",
+            "article_id",
+            name="uq_feed_edition_article",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "feed_date",
+            "edition_type",
+            "market_timezone",
+            "rank_position",
+            name="uq_feed_edition_rank",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
@@ -159,6 +174,10 @@ class Flashcard(Base):
     article_id = Column(Integer, ForeignKey("articles.id"), nullable=False)
     summary_id = Column(Integer, ForeignKey("summaries.id"), nullable=False)
     feed_date = Column(Date, nullable=False, index=True)
+    edition_type = Column(String, nullable=False, default="morning_brief", index=True)
+    market_timezone = Column(
+        String, nullable=False, default="America/New_York", index=True
+    )
     rank_position = Column(Integer, nullable=False)
     ranking_score = Column(Float, nullable=False, default=0.0)
     ranking_reason = Column(String)

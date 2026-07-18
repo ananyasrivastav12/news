@@ -1,10 +1,29 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.endpoints import admin, dev, interests, login, news, users
 from app.core.config import settings
+from app.db.session import SessionLocal
+from app.services.admin_bootstrap import bootstrap_admin_user
 
-app = FastAPI(title="News Summarizer API")
+
+def _bootstrap_admin() -> None:
+    db = SessionLocal()
+    try:
+        bootstrap_admin_user(db)
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    _bootstrap_admin()
+    yield
+
+
+app = FastAPI(title="News Summarizer API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

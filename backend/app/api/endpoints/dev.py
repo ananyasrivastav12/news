@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db import model as db_model
 from app.schemas import news as news_schema
 from app.services.article_pipeline import build_story_key, normalize_title
+from app.services.feed_editions import DEFAULT_TIMEZONE, MORNING_BRIEF, local_feed_date
 from app.services.recommendations import build_today_feed
 from app.tasks.news_fetching import fetch_news_task
 
@@ -203,7 +204,12 @@ def seed_demo_feed(
         .options(
             joinedload(db_model.Flashcard.article).joinedload(db_model.Article.summary),
         )
-        .filter(db_model.Flashcard.user_id == current_user.id)
+        .filter(
+            db_model.Flashcard.user_id == current_user.id,
+            db_model.Flashcard.feed_date == local_feed_date(DEFAULT_TIMEZONE),
+            db_model.Flashcard.edition_type == MORNING_BRIEF,
+            db_model.Flashcard.market_timezone == DEFAULT_TIMEZONE,
+        )
         .order_by(db_model.Flashcard.rank_position.asc())
         .all()
     )

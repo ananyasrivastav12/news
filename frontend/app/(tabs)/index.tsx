@@ -1,4 +1,5 @@
 import { Image } from 'expo-image';
+import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -8,6 +9,7 @@ import {
   Linking,
   PanResponder,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -15,11 +17,38 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAppSession } from '@/context/AppSessionContext';
-import { FeedItem, deleteInteraction, fetchFeed, logInteraction } from '@/lib/api';
+import {
+  FeedEdition,
+  FeedEditionType,
+  FeedItem,
+  deleteInteraction,
+  fetchFeed,
+  fetchFeedEditions,
+  logInteraction,
+} from '@/lib/api';
 
 type ReactionType = 'like' | 'skip' | 'save';
 const IMAGE_PREFETCH_BEHIND = 4;
 const IMAGE_PREFETCH_AHEAD = 12;
+const EDITION_ORDER: FeedEditionType[] = [
+  'morning_brief',
+  'midday_catch_up',
+  'daily_digest',
+];
+
+function getMarketTimezone() {
+  const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (resolved === 'Asia/Kolkata' || resolved === 'Asia/Calcutta') {
+    return 'Asia/Kolkata';
+  }
+  return 'America/New_York';
+}
+
+function formatEditionLabel(editionType: FeedEditionType) {
+  if (editionType === 'morning_brief') return 'Morning';
+  if (editionType === 'midday_catch_up') return 'Midday';
+  return 'Digest';
+}
 
 function formatArticleDate(value: string | null) {
   if (!value) return 'Recent';
@@ -30,11 +59,33 @@ function formatArticleDate(value: string | null) {
   });
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function displayTitle(item: FeedItem) {
+  const source = item.article.source?.trim();
+  if (!source) return item.article.title;
+  return item.article.title.replace(new RegExp(`\\s+-\\s+${escapeRegExp(source)}$`, 'i'), '');
+}
+
+function displayMarketTimezone(value: string) {
+  if (value === 'Asia/Kolkata') return 'India';
+  return 'NYC';
+}
+
 export default function FeedScreen() {
   const router = useRouter();
   const { accessToken, apiBaseUrl, clearSession, sessionReady, userEmail } =
     useAppSession();
   const [feed, setFeed] = useState<FeedItem[]>([]);
+  const [editions, setEditions] = useState<FeedEdition[]>([]);
+  const [selectedFeedDate, setSelectedFeedDate] = useState<string | null>(null);
+  const [selectedEditionType, setSelectedEditionType] =
+    useState<FeedEditionType | null>(null);
+  const selectedFeedDateRef = useRef<string | null>(null);
+  const selectedEditionTypeRef = useRef<FeedEditionType | null>(null);
+  const marketTimezone = useMemo(() => getMarketTimezone(), []);
   const [loading, setLoading] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [activeReactions, setActiveReactions] = useState<
@@ -47,6 +98,16 @@ export default function FeedScreen() {
 
   const currentItem = feed[currentIndex] ?? null;
   const isCaughtUp = feed.length > 0 && currentIndex >= feed.length;
+  const selectedEdition = useMemo(
+    () =>
+      editions.find(
+        (edition) =>
+          edition.feed_date === selectedFeedDate &&
+          edition.edition_type === selectedEditionType
+      ) ?? null,
+    [editions, selectedEditionType, selectedFeedDate]
+  );
+  const activeEditionTitle = selectedEdition?.title ?? 'Morning Brief';
   const warmImageUrls = useMemo(() => {
     const start = Math.max(0, currentIndex - IMAGE_PREFETCH_BEHIND);
     const end = Math.min(feed.length, currentIndex + IMAGE_PREFETCH_AHEAD + 1);
@@ -63,22 +124,71 @@ export default function FeedScreen() {
     [currentIndex, feed.length]
   );
 
+  useEffect(() => {
+    selectedFeedDateRef.current = selectedFeedDate;
+    selectedEditionTypeRef.current = selectedEditionType;
+  }, [selectedEditionType, selectedFeedDate]);
+
   const loadFeed = useCallback(
     async (forceRefresh = false) => {
       if (!accessToken) {
         setFeed([]);
         setCurrentIndex(0);
+        setEditions([]);
+        setSelectedFeedDate(null);
+        setSelectedEditionType(null);
         return;
       }
 
       setLoading(true);
       try {
-        const items = await fetchFeed(apiBaseUrl, accessToken, forceRefresh);
+        const editionResponse = await fetchFeedEditions(
+          apiBaseUrl,
+          accessToken,
+          marketTimezone
+        );
+        setEditions(editionResponse.editions);
+
+        const targetFeedDate =
+          selectedFeedDateRef.current ?? editionResponse.selected_feed_date;
+        const targetEditionType =
+          selectedEditionTypeRef.current ?? editionResponse.selected_edition_type;
+
+        if (!targetFeedDate || !targetEditionType) {
+          setFeed([]);
+          setCurrentIndex(0);
+          setSelectedFeedDate(null);
+          setSelectedEditionType(null);
+          return;
+        }
+
+        const items = await fetchFeed(apiBaseUrl, accessToken, forceRefresh, {
+          feedDate: targetFeedDate,
+          editionType: targetEditionType,
+          marketTimezone,
+        });
         const firstUnreadIndex = items.findIndex(
           (item) =>
             !item.is_viewed && !viewedArticleIdsRef.current.has(item.article.id)
         );
         setFeed(items);
+        setSelectedFeedDate(targetFeedDate);
+        setSelectedEditionType(targetEditionType);
+        setEditions((current) =>
+          current.map((edition) =>
+            edition.feed_date === targetFeedDate &&
+            edition.edition_type === targetEditionType
+              ? {
+                  ...edition,
+                  is_ready: items.length > 0,
+                  total: items.length,
+                  unread: items.filter((item) => !item.is_viewed).length,
+                  completed:
+                    items.length > 0 && items.every((item) => item.is_viewed),
+                }
+              : edition
+          )
+        );
         setCurrentIndex(firstUnreadIndex >= 0 ? firstUnreadIndex : 0);
         setActiveReactions({});
         cardOpenedAt.current = Date.now();
@@ -104,18 +214,77 @@ export default function FeedScreen() {
         setLoading(false);
       }
     },
-    [accessToken, apiBaseUrl, clearSession, router, swipe]
+    [
+      accessToken,
+      apiBaseUrl,
+      clearSession,
+      marketTimezone,
+      router,
+      swipe,
+    ]
   );
 
-  useEffect(() => {
-    void loadFeed(false);
-  }, [loadFeed]);
+  useFocusEffect(
+    useCallback(() => {
+      void loadFeed(false);
+    }, [loadFeed])
+  );
 
   useEffect(() => {
     if (warmImageUrls.length > 0) {
       void Image.prefetch(warmImageUrls, 'memory-disk');
     }
   }, [warmImageUrls]);
+
+  const selectEdition = useCallback(
+    async (edition: FeedEdition) => {
+      if (!accessToken) return;
+
+      setLoading(true);
+      try {
+        const items = await fetchFeed(apiBaseUrl, accessToken, false, {
+          feedDate: edition.feed_date,
+          editionType: edition.edition_type,
+          marketTimezone,
+        });
+        const firstUnreadIndex = items.findIndex(
+          (item) =>
+            !item.is_viewed && !viewedArticleIdsRef.current.has(item.article.id)
+        );
+        setFeed(items);
+        setSelectedFeedDate(edition.feed_date);
+        setSelectedEditionType(edition.edition_type);
+        setEditions((current) =>
+          current.map((item) =>
+            item.feed_date === edition.feed_date &&
+            item.edition_type === edition.edition_type
+              ? {
+                  ...item,
+                  is_ready: items.length > 0,
+                  total: items.length,
+                  unread: items.filter((feedItem) => !feedItem.is_viewed).length,
+                  completed:
+                    items.length > 0 && items.every((feedItem) => feedItem.is_viewed),
+                }
+              : item
+          )
+        );
+        setCurrentIndex(firstUnreadIndex >= 0 ? firstUnreadIndex : 0);
+        setActiveReactions({});
+        cardOpenedAt.current = Date.now();
+        swipe.stopAnimation();
+        swipe.setValue({ x: 0, y: 0 });
+      } catch (error) {
+        Alert.alert(
+          'Feed error',
+          error instanceof Error ? error.message : 'Unable to load edition.'
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [accessToken, apiBaseUrl, marketTimezone, swipe]
+  );
 
   const resetSwipe = useCallback(() => {
     cardOpenedAt.current = Date.now();
@@ -265,6 +434,30 @@ export default function FeedScreen() {
     await Linking.openURL(articleUrl);
   }
 
+  const markCurrentCardViewed = useCallback(
+    (articleId: number) => {
+      setFeed((current) =>
+        current.map((item) =>
+          item.article.id === articleId ? { ...item, is_viewed: true } : item
+        )
+      );
+      setEditions((current) =>
+        current.map((edition) => {
+          if (
+            edition.feed_date !== selectedFeedDate ||
+            edition.edition_type !== selectedEditionType ||
+            edition.unread === 0
+          ) {
+            return edition;
+          }
+          const unread = edition.unread - 1;
+          return { ...edition, unread, completed: unread === 0 };
+        })
+      );
+    },
+    [selectedEditionType, selectedFeedDate]
+  );
+
   useEffect(() => {
     if (!currentItem || !accessToken) return;
 
@@ -274,6 +467,7 @@ export default function FeedScreen() {
     }
 
     viewedArticleIdsRef.current.add(articleId);
+    markCurrentCardViewed(articleId);
     void logInteraction(apiBaseUrl, accessToken, {
       article_id: articleId,
       interaction_type: 'view',
@@ -285,7 +479,64 @@ export default function FeedScreen() {
         }`
       );
     });
-  }, [accessToken, apiBaseUrl, currentItem]);
+  }, [accessToken, apiBaseUrl, currentItem, markCurrentCardViewed]);
+
+  function renderEditionSwitcher() {
+    if (editions.length === 0) return null;
+
+    return (
+      <View style={styles.editionSwitcher}>
+        {EDITION_ORDER.map((editionType) => {
+          const edition = editions.find(
+            (item) =>
+              item.feed_date === selectedFeedDate && item.edition_type === editionType
+          ) ?? editions.find((item) => item.edition_type === editionType);
+          const isSelected =
+            selectedEditionType === editionType &&
+            selectedFeedDate === edition?.feed_date;
+          const isReady = Boolean(edition?.is_ready);
+          const canOpen = Boolean(
+            edition && (isReady || new Date(edition.expected_publish_at) <= new Date())
+          );
+          return (
+            <Pressable
+              key={editionType}
+              disabled={!canOpen}
+              style={[
+                styles.editionButton,
+                isSelected && styles.editionButtonSelected,
+                !canOpen && styles.editionButtonDisabled,
+              ]}
+              onPress={() => edition && void selectEdition(edition)}
+            >
+              <Text
+                style={[
+                  styles.editionButtonText,
+                  isSelected && styles.editionButtonTextSelected,
+                  !canOpen && styles.editionButtonTextDisabled,
+                ]}
+              >
+                {formatEditionLabel(editionType)}
+              </Text>
+              <Text
+                style={[
+                  styles.editionProgressText,
+                  isSelected && styles.editionButtonTextSelected,
+                  !canOpen && styles.editionButtonTextDisabled,
+                ]}
+              >
+                {edition && isReady
+                  ? `${edition.total - edition.unread}/${edition.total}`
+                  : canOpen
+                    ? 'Load'
+                    : 'Pending'}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    );
+  }
 
   if (!sessionReady) {
     return (
@@ -298,10 +549,10 @@ export default function FeedScreen() {
   if (!accessToken) {
     return (
       <SafeAreaView style={styles.emptyState}>
-        <Text style={styles.emptyKicker}>Morning Brief</Text>
+        <Text style={styles.emptyKicker}>Daily Editions</Text>
         <Text style={styles.emptyTitle}>Let’s set up your reader</Text>
         <Text style={styles.emptyBody}>
-          Create an account, pick interests, and your personalized news cards will land here.
+          Log in with your beta invite, pick interests, and your personalized news cards will land here.
         </Text>
         <Pressable style={styles.primaryButton} onPress={() => router.replace('/explore')}>
           <Text style={styles.primaryButtonText}>Start setup</Text>
@@ -321,11 +572,12 @@ export default function FeedScreen() {
   if (isCaughtUp) {
     return (
       <SafeAreaView style={styles.emptyState}>
-        <Text style={styles.caughtUpEmoji}>🌞</Text>
-        <Text style={styles.emptyTitle}>You’re all caught up</Text>
+        <Text style={styles.caughtUpEmoji}>Done</Text>
+        <Text style={styles.emptyTitle}>You’re caught up on {activeEditionTitle}</Text>
         <Text style={styles.emptyBody}>
-          That’s the full brief for now. Revisit the last story or reload when new cards are ready.
+          That’s the full edition for now. Revisit the last story or check the other editions.
         </Text>
+        {renderEditionSwitcher()}
         <Pressable
           style={styles.primaryButton}
           onPress={() => {
@@ -344,11 +596,11 @@ export default function FeedScreen() {
       <SafeAreaView style={styles.emptyState}>
         <Text style={styles.emptyTitle}>No cards yet</Text>
         <Text style={styles.emptyBody}>
-          No summarized articles are ready for {userEmail || 'this user'} yet. Run the real news
-          pipeline, then generate your feed again.
+          No edition is ready for {userEmail || 'this user'} in {displayMarketTimezone(marketTimezone)} yet.
         </Text>
+        {renderEditionSwitcher()}
         <Pressable style={styles.primaryButton} onPress={() => void loadFeed(true)}>
-          <Text style={styles.primaryButtonText}>Generate feed</Text>
+          <Text style={styles.primaryButtonText}>Check again</Text>
         </Pressable>
         <Pressable style={styles.secondaryEmptyButton} onPress={() => router.replace('/explore')}>
           <Text style={styles.secondaryEmptyButtonText}>Open profile</Text>
@@ -367,15 +619,17 @@ export default function FeedScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerTitle}>Morning Brief</Text>
+          <Text style={styles.headerTitle}>{activeEditionTitle}</Text>
           <Text style={styles.headerSubtitle}>
             {feedStats.current} of {feedStats.total} for {userEmail || 'you'}
           </Text>
         </View>
         <Pressable style={styles.secondaryButton} onPress={() => void loadFeed(true)}>
-          <Text style={styles.secondaryButtonText}>Reload</Text>
+          <Text style={styles.secondaryButtonText}>Refresh</Text>
         </Pressable>
       </View>
+
+      {renderEditionSwitcher()}
 
       <View style={styles.cardStage}>
         <Animated.View
@@ -406,7 +660,12 @@ export default function FeedScreen() {
             </View>
           )}
 
-          <View style={styles.cardBody}>
+          <ScrollView
+            style={styles.cardBodyScroll}
+            contentContainerStyle={styles.cardBody}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+          >
             <View style={styles.metaRow}>
               <View>
                 <Text style={styles.categoryPill}>{currentItem.article.primary_category}</Text>
@@ -453,10 +712,15 @@ export default function FeedScreen() {
             </View>
 
             <Pressable onPress={() => void openArticle()}>
-              <Text style={styles.title}>{currentItem.article.title}</Text>
+              <Text style={styles.title}>
+                {displayTitle(currentItem)}
+              </Text>
             </Pressable>
-            <Text style={styles.takeaway}>{currentItem.article.summary.main_takeaway}</Text>
-          </View>
+            <Text style={styles.sourceText}>{currentItem.article.source || 'News source'}</Text>
+            <Text style={styles.takeaway}>
+              {currentItem.article.summary.main_takeaway}
+            </Text>
+          </ScrollView>
         </Animated.View>
       </View>
       <Text style={styles.swipeHint}>Swipe left for next. Swipe right to go back.</Text>
@@ -471,14 +735,14 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 12,
+    paddingTop: 6,
+    paddingBottom: 8,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
   headerTitle: {
-    fontSize: 28,
+    fontSize: 27,
     fontWeight: '800',
     color: '#08090a',
   },
@@ -497,17 +761,57 @@ const styles = StyleSheet.create({
     color: '#0b4fd6',
     fontWeight: '700',
   },
+  editionSwitcher: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    flexDirection: 'row',
+    gap: 8,
+  },
+  editionButton: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#d8dde8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  editionButtonSelected: {
+    backgroundColor: '#1268ff',
+    borderColor: '#1268ff',
+  },
+  editionButtonDisabled: {
+    backgroundColor: '#eef1f6',
+  },
+  editionButtonText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#172033',
+  },
+  editionButtonTextSelected: {
+    color: '#ffffff',
+  },
+  editionButtonTextDisabled: {
+    color: '#818998',
+  },
+  editionProgressText: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#667085',
+  },
   cardStage: {
     flex: 1,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
     paddingHorizontal: 20,
-    paddingBottom: 10,
+    paddingBottom: 6,
   },
   card: {
-    minHeight: 580,
-    maxHeight: 650,
+    flex: 1,
+    minHeight: 0,
     backgroundColor: '#ffffff',
-    borderRadius: 24,
+    borderRadius: 20,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#d8dde8',
@@ -518,12 +822,12 @@ const styles = StyleSheet.create({
   },
   heroImage: {
     width: '100%',
-    height: 230,
+    height: 170,
     backgroundColor: '#dbe7ff',
   },
   imageFallback: {
     width: '100%',
-    height: 230,
+    height: 170,
     backgroundColor: '#dbe7ff',
     alignItems: 'center',
     justifyContent: 'center',
@@ -533,9 +837,13 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#1268ff',
   },
+  cardBodyScroll: {
+    flex: 1,
+  },
   cardBody: {
-    padding: 20,
-    gap: 12,
+    padding: 18,
+    gap: 8,
+    paddingBottom: 24,
   },
   metaRow: {
     flexDirection: 'row',
@@ -555,16 +863,21 @@ const styles = StyleSheet.create({
     color: '#6d7480',
   },
   title: {
-    fontSize: 22,
-    lineHeight: 28,
+    fontSize: 20,
+    lineHeight: 25,
     fontWeight: '900',
     color: '#08090a',
     textDecorationLine: 'underline',
     textDecorationColor: '#9fc1ff',
   },
+  sourceText: {
+    color: '#6d7480',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   takeaway: {
     fontSize: 16,
-    lineHeight: 23,
+    lineHeight: 24,
     color: '#2c3036',
     fontWeight: '400',
   },
@@ -573,9 +886,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   reactionButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#f1f5fb',
     alignItems: 'center',
     justifyContent: 'center',
@@ -605,11 +918,11 @@ const styles = StyleSheet.create({
   },
   swipeHint: {
     color: '#7b8493',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
     textAlign: 'center',
-    paddingTop: 4,
-    paddingBottom: 22,
+    paddingTop: 2,
+    paddingBottom: 12,
   },
   emptyState: {
     flex: 1,
@@ -638,7 +951,9 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   caughtUpEmoji: {
-    fontSize: 48,
+    fontSize: 24,
+    fontWeight: '900',
+    color: '#1268ff',
   },
   primaryButton: {
     backgroundColor: '#1268ff',

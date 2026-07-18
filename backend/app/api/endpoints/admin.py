@@ -6,12 +6,20 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.api.dependencies import get_current_admin_user, get_db
 from app.core.config import settings
+from app.crud import user as crud_user
 from app.db import model as db_model
 from app.schemas import admin as admin_schema
 from app.services.admin_pipeline import (
     create_pipeline_run,
     next_daily_run_at,
     run_pipeline_background,
+)
+from app.services.feed_editions import (
+    DEFAULT_TIMEZONE,
+    MORNING_BRIEF,
+    local_feed_date,
+    normalize_timezone,
+    validate_edition_type,
 )
 from app.tasks.news_fetching import _build_user_feed
 
@@ -61,6 +69,7 @@ def read_admin_overview(db: Session = Depends(get_db)):
         "fresh_articles": db.query(db_model.Article)
         .filter(db_model.Article.published_at >= fresh_cutoff)
         .count(),
+        "pending_summaries": pending_summaries,
         "completed_summaries": db.query(db_model.Article)
         .filter(db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED)
         .count(),
@@ -70,13 +79,18 @@ def read_admin_overview(db: Session = Depends(get_db)):
         "feed_items_generated": db.query(db_model.Flashcard).count(),
         "users_with_feeds": db.query(db_model.Flashcard.user_id).distinct().count(),
         "total_users": db.query(db_model.User).count(),
+        "current_feed_size": settings.feed_edition_size,
+        "article_pool_limit": settings.ARTICLE_POOL_LIMIT,
+        "max_feed_items": settings.MAX_FEED_ITEMS,
         "viewed_count": _interaction_count(db, db_model.InteractionType.VIEW),
         "liked_count": _interaction_count(db, db_model.InteractionType.LIKE),
         "disliked_count": _interaction_count(db, db_model.InteractionType.SKIP),
         "saved_count": _interaction_count(db, db_model.InteractionType.SAVE),
         "newsapi_requests_planned": len(settings.news_api_countries) * len(categories),
+        "newsapi_page_size": settings.NEWS_API_PAGE_SIZE,
         "newsapi_daily_target": settings.NEWS_DAILY_ARTICLE_TARGET,
         "openai_summary_calls_planned": pending_summaries,
+        "openai_daily_summary_limit": settings.OPENAI_DAILY_SUMMARY_LIMIT,
         "openai_embedding_calls_planned": embedding_candidates,
         "last_successful_run_at": (
             last_successful_run.finished_at if last_successful_run else None
@@ -132,9 +146,28 @@ def run_summarization(background_tasks: BackgroundTasks, db: Session = Depends(g
     status_code=status.HTTP_202_ACCEPTED,
 )
 def run_feed_generation(
-    background_tasks: BackgroundTasks, db: Session = Depends(get_db)
+    payload: admin_schema.AdminFeedGenerationRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
 ):
-    return _queue_pipeline_run(db, background_tasks, "feed_generation")
+    if payload.edition_type != "all":
+        try:
+            validate_edition_type(payload.edition_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _queue_pipeline_run(
+        db,
+        background_tasks,
+        "feed_generation",
+        options={
+            "edition_type": payload.edition_type,
+            "market_timezone": normalize_timezone(payload.market_timezone),
+            "feed_date": payload.feed_date,
+            "force_refresh": payload.force_refresh,
+            "summarize_first": payload.summarize_first,
+            "run_ingestion_first": payload.run_ingestion_first,
+        },
+    )
 
 
 @router.get("/articles", response_model=list[admin_schema.AdminArticleOut])
@@ -254,6 +287,27 @@ def read_admin_users(db: Session = Depends(get_db)):
     return [_user_row(user) for user in users]
 
 
+@router.post(
+    "/users",
+    response_model=admin_schema.AdminUserCreated,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_admin_user(
+    payload: admin_schema.AdminUserCreate,
+    db: Session = Depends(get_db),
+):
+    existing = crud_user.get_user_by_email(db, email=str(payload.email))
+    if existing is not None:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    user = crud_user.create_user(db, payload)
+    return {
+        "id": user.id,
+        "email": user.email,
+        "interests": [],
+    }
+
+
 @router.get("/users/{user_id}/feed", response_model=list[admin_schema.UserFeedItemOut])
 def read_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
     user = db.get(db_model.User, user_id)
@@ -272,13 +326,23 @@ def read_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
     flashcards = (
         db.query(db_model.Flashcard)
         .options(joinedload(db_model.Flashcard.article))
-        .filter(db_model.Flashcard.user_id == user_id)
-        .order_by(desc(db_model.Flashcard.feed_date), db_model.Flashcard.rank_position)
+        .filter(
+            db_model.Flashcard.user_id == user_id,
+            db_model.Flashcard.rank_position <= settings.feed_edition_size,
+        )
+        .order_by(
+            desc(db_model.Flashcard.feed_date),
+            db_model.Flashcard.edition_type,
+            db_model.Flashcard.rank_position,
+        )
         .limit(settings.MAX_FEED_ITEMS)
         .all()
     )
     return [
         {
+            "feed_date": flashcard.feed_date.isoformat(),
+            "edition_type": flashcard.edition_type,
+            "market_timezone": flashcard.market_timezone,
             "rank_position": flashcard.rank_position,
             "article_id": flashcard.article_id,
             "title": flashcard.article.title,
@@ -300,7 +364,23 @@ def read_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/users/{user_id}/rebuild-feed")
-def rebuild_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
+def rebuild_admin_user_feed(
+    user_id: int,
+    edition_type: str = Query(default=MORNING_BRIEF),
+    market_timezone: str = Query(default=DEFAULT_TIMEZONE),
+    feed_date: str | None = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        validate_edition_type(edition_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    market_timezone = normalize_timezone(market_timezone)
+    target_date = (
+        datetime.fromisoformat(feed_date).date()
+        if feed_date
+        else local_feed_date(market_timezone)
+    )
     user = (
         db.query(db_model.User)
         .options(
@@ -320,9 +400,20 @@ def rebuild_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
     feed_count = _build_user_feed(
-        db, user, datetime.now(timezone.utc).date(), force_refresh=True
+        db,
+        user,
+        target_date,
+        edition_type=edition_type,
+        market_timezone=market_timezone,
+        force_refresh=True,
     )
-    return {"user_id": user_id, "feed_items": feed_count}
+    return {
+        "user_id": user_id,
+        "feed_items": feed_count,
+        "feed_date": target_date.isoformat(),
+        "edition_type": edition_type,
+        "market_timezone": market_timezone,
+    }
 
 
 @router.get("/summary-reviews", response_model=list[admin_schema.SummaryReviewOut])
@@ -438,9 +529,16 @@ def _queue_pipeline_run(
     db: Session,
     background_tasks: BackgroundTasks,
     run_type: str,
+    options: dict[str, object] | None = None,
 ) -> dict[str, object]:
-    pipeline_run = create_pipeline_run(db, run_type)
-    background_tasks.add_task(run_pipeline_background, pipeline_run.id, run_type)
+    metadata = {"options": options or {}}
+    pipeline_run = create_pipeline_run(db, run_type, metadata=metadata)
+    background_tasks.add_task(
+        run_pipeline_background,
+        pipeline_run.id,
+        run_type,
+        options or {},
+    )
     return {
         "id": pipeline_run.id,
         "status": pipeline_run.status.value,
@@ -479,6 +577,13 @@ def _article_row(article: db_model.Article) -> dict[str, object]:
 def _user_row(user: db_model.User) -> dict[str, object]:
     interactions = user.interactions
     flashcards = user.flashcards
+    today = datetime.now(timezone.utc).date()
+    current_flashcards = [
+        flashcard
+        for flashcard in flashcards
+        if flashcard.feed_date == today
+        and flashcard.rank_position <= settings.feed_edition_size
+    ]
     last_active = max(
         (
             interaction.created_at
@@ -495,7 +600,7 @@ def _user_row(user: db_model.User) -> dict[str, object]:
         "id": user.id,
         "email": user.email,
         "interests": [link.interest.name for link in user.interests if link.interest],
-        "feed_count": len(flashcards),
+        "feed_count": len(current_flashcards),
         "viewed_count": sum(
             1
             for item in interactions

@@ -26,6 +26,11 @@ const ACCESS_TOKEN_KEY = 'news.accessToken';
 const USER_EMAIL_KEY = 'news.userEmail';
 
 function getDefaultApiBaseUrl() {
+  const configuredUrl = process.env.EXPO_PUBLIC_API_BASE_URL?.trim();
+  if (configuredUrl) {
+    return configuredUrl.replace(/\/+$/, '');
+  }
+
   const hostUri = Constants.expoConfig?.hostUri;
   const host = hostUri?.split(':')[0];
 

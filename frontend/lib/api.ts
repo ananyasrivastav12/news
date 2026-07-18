@@ -7,6 +7,8 @@ export type Interest = {
 export type FeedItem = {
   id: number;
   feed_date: string;
+  edition_type: FeedEditionType;
+  market_timezone: string;
   rank_position: number;
   ranking_score: number;
   ranking_reason: string | null;
@@ -27,6 +29,27 @@ export type FeedItem = {
       supporting_lines: string[];
     };
   };
+};
+
+export type FeedEditionType = 'morning_brief' | 'midday_catch_up' | 'daily_digest';
+
+export type FeedEdition = {
+  feed_date: string;
+  edition_type: FeedEditionType;
+  title: string;
+  market_timezone: string;
+  expected_publish_at: string;
+  is_ready: boolean;
+  total: number;
+  unread: number;
+  completed: boolean;
+};
+
+export type FeedEditionsResponse = {
+  selected_feed_date: string | null;
+  selected_edition_type: FeedEditionType | null;
+  market_timezone: string;
+  editions: FeedEdition[];
 };
 
 export type SavedArticle = FeedItem['article'];
@@ -63,7 +86,8 @@ async function request<T>(
   const response = await fetch(`${apiBaseUrl}${path}`, options);
   if (!response.ok) {
     const text = await response.text();
-    console.error(`[api] ${method} ${path} -> ${response.status}`, text);
+    const log = response.status === 401 ? console.log : console.error;
+    log(`[api] ${method} ${path} -> ${response.status}`, text);
     let message = text || `Request failed with ${response.status}`;
     try {
       const payload = JSON.parse(text) as { detail?: string };
@@ -78,17 +102,6 @@ async function request<T>(
     return undefined as T;
   }
   return response.json() as Promise<T>;
-}
-
-export function createUser(
-  apiBaseUrl: string,
-  payload: { email: string; password: string }
-) {
-  return request<{ id: number; email: string }>(apiBaseUrl, '/api/users/', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
 }
 
 export function login(
@@ -108,14 +121,6 @@ export function login(
       body: body.toString(),
     }
   );
-}
-
-export function loginWithGoogle(apiBaseUrl: string, payload: { id_token: string }) {
-  return request<TokenResponse>(apiBaseUrl, '/api/login/google', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
 }
 
 export function fetchInterests(apiBaseUrl: string) {
@@ -146,12 +151,37 @@ export function fetchMyInterests(apiBaseUrl: string, accessToken: string) {
 export function fetchFeed(
   apiBaseUrl: string,
   accessToken: string,
-  forceRefresh = false
+  forceRefresh = false,
+  options: {
+    feedDate?: string | null;
+    editionType?: FeedEditionType | null;
+    marketTimezone?: string;
+  } = {}
 ) {
-  const search = forceRefresh ? '?force_refresh=true' : '';
-  return request<FeedItem[]>(apiBaseUrl, `/api/users/me/feed${search}`, {
+  const search = new URLSearchParams();
+  if (forceRefresh) search.set('force_refresh', 'true');
+  if (options.feedDate) search.set('feed_date', options.feedDate);
+  if (options.editionType) search.set('edition_type', options.editionType);
+  if (options.marketTimezone) search.set('market_timezone', options.marketTimezone);
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return request<FeedItem[]>(apiBaseUrl, `/api/users/me/feed${suffix}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
+}
+
+export function fetchFeedEditions(
+  apiBaseUrl: string,
+  accessToken: string,
+  marketTimezone: string
+) {
+  const search = new URLSearchParams({ market_timezone: marketTimezone });
+  return request<FeedEditionsResponse>(
+    apiBaseUrl,
+    `/api/users/me/feed-editions?${search.toString()}`,
+    {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }
+  );
 }
 
 export function fetchSavedArticles(apiBaseUrl: string, accessToken: string) {
@@ -212,10 +242,21 @@ export function deleteInteraction(
   );
 }
 
-export function triggerFeedGeneration(apiBaseUrl: string) {
+export function triggerFeedGeneration(
+  apiBaseUrl: string,
+  options: {
+    feedDate?: string | null;
+    editionType?: FeedEditionType;
+    marketTimezone?: string;
+  } = {}
+) {
+  const search = new URLSearchParams({ force_refresh: 'true' });
+  if (options.feedDate) search.set('feed_date', options.feedDate);
+  if (options.editionType) search.set('edition_type', options.editionType);
+  if (options.marketTimezone) search.set('market_timezone', options.marketTimezone);
   return request<{ message: string; task_id: string }>(
     apiBaseUrl,
-    '/api/tasks/generate-feeds?force_refresh=true',
+    `/api/tasks/generate-feeds?${search.toString()}`,
     { method: 'POST' }
   );
 }

@@ -7,18 +7,24 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 type Overview = {
   total_articles: number;
   fresh_articles: number;
+  pending_summaries: number;
   completed_summaries: number;
   failed_summaries: number;
   feed_items_generated: number;
   users_with_feeds: number;
   total_users: number;
+  current_feed_size: number;
+  article_pool_limit: number;
+  max_feed_items: number;
   viewed_count: number;
   liked_count: number;
   disliked_count: number;
   saved_count: number;
   newsapi_requests_planned: number;
+  newsapi_page_size: number;
   newsapi_daily_target: number;
   openai_summary_calls_planned: number;
+  openai_daily_summary_limit: number;
   openai_embedding_calls_planned: number;
   last_successful_run_at: string | null;
   next_scheduled_run_at: string | null;
@@ -37,6 +43,14 @@ type PipelineRun = {
   summary_failed_count: number;
   feed_items_count: number;
   error_message: string | null;
+  metadata_json: Record<string, unknown>;
+  logs: { id: number; level: string; message: string; created_at: string | null }[];
+};
+
+type PipelineRunQueued = {
+  id: number;
+  status: string;
+  message: string;
 };
 
 type Article = {
@@ -67,6 +81,9 @@ type AdminUser = {
 };
 
 type FeedItem = {
+  feed_date: string;
+  edition_type: string;
+  market_timezone: string;
   rank_position: number;
   article_id: number;
   title: string;
@@ -78,6 +95,12 @@ type FeedItem = {
   liked: boolean;
   saved: boolean;
   disliked: boolean;
+};
+
+type AdminUserCreated = {
+  id: number;
+  email: string;
+  interests: string[];
 };
 
 type Schedule = {
@@ -223,6 +246,8 @@ function App() {
 function OverviewPage({ api }: { api: Api }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isRunningPipeline, setIsRunningPipeline] = useState(false);
+  const [actionStatus, setActionStatus] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -234,8 +259,19 @@ function OverviewPage({ api }: { api: Api }) {
   }, [api]);
 
   async function runFullPipeline() {
-    await api.post("/api/admin/pipeline-runs/full");
-    setOverview(await api.get<Overview>("/api/admin/overview"));
+    const confirmed = window.confirm(
+      "Run the full pipeline now? This may spend NewsAPI and OpenAI quota."
+    );
+    if (!confirmed) return;
+    setIsRunningPipeline(true);
+    setActionStatus("");
+    try {
+      const queued = await api.post<PipelineRunQueued>("/api/admin/pipeline-runs/full");
+      setActionStatus(`Full pipeline queued as run #${queued.id}. Check Pipeline Runs for progress.`);
+      setOverview(await api.get<Overview>("/api/admin/overview"));
+    } finally {
+      setIsRunningPipeline(false);
+    }
   }
 
   if (loading) return <PageTitle title="Overview" subtitle="Loading..." />;
@@ -245,18 +281,31 @@ function OverviewPage({ api }: { api: Api }) {
     <section>
       <PageTitle title="Overview" subtitle="Freshness, capacity, and engagement." />
       <div className="toolbar">
-        <button onClick={runFullPipeline}>Run full pipeline now</button>
+        <ActionButton
+          busy={isRunningPipeline}
+          busyLabel="Queueing..."
+          onClick={runFullPipeline}
+        >
+          Run full pipeline now
+        </ActionButton>
       </div>
+      {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
       <div className="metric-grid">
         <Metric label="Total articles" value={overview.total_articles} />
         <Metric label="Fresh articles" value={overview.fresh_articles} />
+        <Metric label="Pending summaries" value={overview.pending_summaries} />
         <Metric label="Completed summaries" value={overview.completed_summaries} />
         <Metric label="Failed summaries" value={overview.failed_summaries} tone="bad" />
         <Metric label="Feed items" value={overview.feed_items_generated} />
         <Metric label="Users with feeds" value={overview.users_with_feeds} />
+        <Metric label="Target feed size" value={overview.current_feed_size} />
+        <Metric label="Article pool limit" value={overview.article_pool_limit} />
+        <Metric label="Max feed rows/user" value={overview.max_feed_items} />
         <Metric label="NewsAPI planned" value={overview.newsapi_requests_planned} />
+        <Metric label="NewsAPI page size" value={overview.newsapi_page_size} />
         <Metric label="Daily target" value={overview.newsapi_daily_target} />
         <Metric label="Summary calls planned" value={overview.openai_summary_calls_planned} />
+        <Metric label="OpenAI summary limit" value={overview.openai_daily_summary_limit} />
         <Metric label="Embedding calls planned" value={overview.openai_embedding_calls_planned} />
         <Metric label="Views" value={overview.viewed_count} />
         <Metric label="Saved" value={overview.saved_count} />
@@ -272,6 +321,8 @@ function OverviewPage({ api }: { api: Api }) {
 function RunsPage({ api }: { api: Api }) {
   const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [actionStatus, setActionStatus] = useState("");
 
   async function refresh() {
     setLoading(true);
@@ -298,23 +349,58 @@ function RunsPage({ api }: { api: Api }) {
     return () => window.clearInterval(intervalId);
   }, [api, runs]);
 
-  async function run(path: string) {
-    await api.post(path);
-    await refresh();
+  async function run(path: string, label: string, body?: unknown) {
+    if (
+      label === "Full pipeline" &&
+      !window.confirm("Run the full pipeline now? This may spend NewsAPI and OpenAI quota.")
+    ) {
+      return;
+    }
+    setPendingAction(label);
+    setActionStatus("");
+    try {
+      const queued = await api.post<PipelineRunQueued>(path, body);
+      setActionStatus(`${label} queued as run #${queued.id}.`);
+      await refresh();
+    } finally {
+      setPendingAction(null);
+    }
   }
 
   return (
     <section>
-      <PageTitle title="Pipeline Runs" subtitle="Run history, counts, and failures." />
+      <PageTitle title="Pipeline Runs" subtitle="Shared article ingestion and summarization history." />
       <div className="toolbar">
-        <button onClick={() => run("/api/admin/pipeline-runs/full")}>Full pipeline</button>
-        <button onClick={() => run("/api/admin/pipeline-runs/ingest")}>Ingest</button>
-        <button onClick={() => run("/api/admin/pipeline-runs/summarize")}>Summarize</button>
-        <button onClick={() => run("/api/admin/pipeline-runs/generate-feeds")}>
-          Generate feeds
-        </button>
+        <ActionButton
+          busy={pendingAction === "Full pipeline"}
+          disabled={pendingAction !== null}
+          onClick={() => run("/api/admin/pipeline-runs/full", "Full pipeline")}
+        >
+          Refresh article pool
+        </ActionButton>
+        <ActionButton
+          busy={pendingAction === "Ingest"}
+          disabled={pendingAction !== null}
+          onClick={() => run("/api/admin/pipeline-runs/ingest", "Ingest")}
+        >
+          Ingest
+        </ActionButton>
+        <ActionButton
+          busy={pendingAction === "Summarize"}
+          disabled={pendingAction !== null}
+          onClick={() => run("/api/admin/pipeline-runs/summarize", "Summarize")}
+        >
+          Summarize
+        </ActionButton>
       </div>
+      {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
       {loading ? <InlineState message="Loading runs..." /> : null}
+      <div className="legend-grid">
+        <InlineState message="Fetched: raw articles returned by NewsAPI." />
+        <InlineState message="Inserted: new articles after validation and dedupe." />
+        <InlineState message="Summaries: articles summarized in this run." />
+        <InlineState message="Feeds are ranked per user when the mobile app loads." />
+      </div>
       <table>
         <thead>
           <tr>
@@ -327,6 +413,7 @@ function RunsPage({ api }: { api: Api }) {
             <th>Summaries</th>
             <th>Failures</th>
             <th>Feeds</th>
+            <th>Options</th>
             <th>Finished</th>
           </tr>
         </thead>
@@ -342,6 +429,7 @@ function RunsPage({ api }: { api: Api }) {
               <td>{run.summarized_count}</td>
               <td>{run.summary_failed_count}</td>
               <td>{run.feed_items_count}</td>
+              <td>{describeRunOptions(run.metadata_json)}</td>
               <td>{formatDate(run.finished_at)}</td>
             </tr>
           ))}
@@ -356,18 +444,21 @@ function ArticlesPage({ api }: { api: Api }) {
   const [country, setCountry] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
+  const [isApplyingFilters, setIsApplyingFilters] = useState(false);
 
   async function refresh() {
     const params = new URLSearchParams();
     if (country) params.set("country", country);
     if (status) params.set("summary_status", status);
     setLoading(true);
+    setIsApplyingFilters(true);
     try {
       setArticles(await api.get<Article[]>(`/api/admin/articles?${params}`));
     } catch {
       setArticles([]);
     } finally {
       setLoading(false);
+      setIsApplyingFilters(false);
     }
   }
 
@@ -390,7 +481,9 @@ function ArticlesPage({ api }: { api: Api }) {
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
         </select>
-        <button onClick={refresh}>Apply filters</button>
+        <ActionButton busy={isApplyingFilters} busyLabel="Applying..." onClick={refresh}>
+          Apply filters
+        </ActionButton>
       </div>
       {loading ? <InlineState message="Loading articles..." /> : null}
       <table>
@@ -408,6 +501,13 @@ function ArticlesPage({ api }: { api: Api }) {
           </tr>
         </thead>
         <tbody>
+          {!loading && articles.length === 0 ? (
+            <tr>
+              <td colSpan={9} className="empty-table-cell">
+                No articles match these filters.
+              </td>
+            </tr>
+          ) : null}
           {articles.map((article) => (
             <tr key={article.id}>
               <td className="title-cell">{article.title}</td>
@@ -432,62 +532,164 @@ function UsersPage({ api }: { api: Api }) {
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
   const [feed, setFeed] = useState<FeedItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedFeedLoading, setSelectedFeedLoading] = useState(false);
+  const [isRebuildingFeed, setIsRebuildingFeed] = useState(false);
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [createStatus, setCreateStatus] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+  const [rebuildEditionType, setRebuildEditionType] = useState("morning_brief");
+  const [rebuildTimezone, setRebuildTimezone] = useState("America/New_York");
+
+  async function refreshUsers() {
+    setLoading(true);
+    try {
+      setUsers(await api.get<AdminUser[]>("/api/admin/users"));
+    } catch {
+      setUsers([]);
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    setLoading(true);
-    api
-      .get<AdminUser[]>("/api/admin/users")
-      .then(setUsers)
-      .catch(() => setUsers([]))
-      .finally(() => setLoading(false));
+    void refreshUsers();
   }, [api]);
 
   async function inspect(userId: number) {
     setSelectedUserId(userId);
-    setFeed(await api.get<FeedItem[]>(`/api/admin/users/${userId}/feed`));
+    setSelectedFeedLoading(true);
+    try {
+      setFeed(await api.get<FeedItem[]>(`/api/admin/users/${userId}/feed`));
+    } finally {
+      setSelectedFeedLoading(false);
+    }
   }
 
   async function rebuild() {
     if (!selectedUserId) return;
-    await api.post(`/api/admin/users/${selectedUserId}/rebuild-feed`);
-    await inspect(selectedUserId);
+    setIsRebuildingFeed(true);
+    try {
+      const params = new URLSearchParams({
+        edition_type: rebuildEditionType,
+        market_timezone: rebuildTimezone,
+      });
+      await api.post(`/api/admin/users/${selectedUserId}/rebuild-feed?${params}`);
+      await inspect(selectedUserId);
+      await refreshUsers();
+    } finally {
+      setIsRebuildingFeed(false);
+    }
+  }
+
+  async function createUser(event: FormEvent) {
+    event.preventDefault();
+    setIsCreatingUser(true);
+    setCreateStatus("");
+    try {
+      const created = await api.post<AdminUserCreated>("/api/admin/users", {
+        email: newUserEmail.trim(),
+        password: newUserPassword,
+      });
+      setCreateStatus(`Created ${created.email}. They can now log into the app.`);
+      setNewUserEmail("");
+      setNewUserPassword("");
+      await refreshUsers();
+    } finally {
+      setIsCreatingUser(false);
+    }
   }
 
   return (
     <section>
-      <PageTitle title="Users" subtitle="Feeds, interests, and engagement." />
+      <PageTitle title="Users" subtitle="Beta access and per-user feed inspection." />
+      <form className="panel-form user-create-form" onSubmit={createUser}>
+        <label>
+          Beta email
+          <input
+            type="email"
+            value={newUserEmail}
+            onChange={(event) => setNewUserEmail(event.target.value)}
+            placeholder="reader@example.com"
+            required
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            minLength={8}
+            value={newUserPassword}
+            onChange={(event) => setNewUserPassword(event.target.value)}
+            placeholder="At least 8 characters"
+            required
+          />
+        </label>
+        <ActionButton type="submit" busy={isCreatingUser} busyLabel="Creating...">
+          Create beta user
+        </ActionButton>
+      </form>
+      {createStatus ? <InlineState message={createStatus} tone="success" /> : null}
       {loading ? <InlineState message="Loading users..." /> : null}
-      <div className="split">
-        <table>
-          <thead>
-            <tr>
-              <th>Email</th>
-              <th>Interests</th>
-              <th>Feed</th>
-              <th>Signals</th>
-              <th>Last active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.map((user) => (
-              <tr key={user.id} onClick={() => inspect(user.id)}>
-                <td>{user.email}</td>
-                <td>{user.interests.join(", ") || "-"}</td>
-                <td>{user.feed_count}</td>
-                <td>{user.viewed_count}/{user.liked_count}/{user.saved_count}</td>
-                <td>{formatDate(user.last_active)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="inspector">
-          <div className="toolbar compact">
-            <strong>User Feed Inspector</strong>
-            <button disabled={!selectedUserId} onClick={rebuild}>Rebuild feed</button>
-          </div>
-          <table>
+      <div className="user-workspace">
+        <div className="table-panel">
+          <table className="users-table">
             <thead>
               <tr>
+                <th>Email</th>
+                <th>Interests</th>
+                <th>Feed rows</th>
+                <th>Signals</th>
+                <th>Last active</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => (
+                <tr
+                  key={user.id}
+                  className={selectedUserId === user.id ? "selected-row" : ""}
+                  onClick={() => inspect(user.id)}
+                >
+                  <td>{user.email}</td>
+                  <td>{user.interests.join(", ") || "Not selected yet"}</td>
+                  <td>{user.feed_count}</td>
+                  <td>{user.viewed_count}/{user.liked_count}/{user.saved_count}</td>
+                  <td>{formatDate(user.last_active)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="inspector panel">
+          <div className="toolbar compact">
+            <strong>
+              {selectedUserId
+                ? `Feed Inspector: ${users.find((user) => user.id === selectedUserId)?.email ?? ""}`
+                : "Feed Inspector"}
+            </strong>
+            <select value={rebuildEditionType} onChange={(event) => setRebuildEditionType(event.target.value)}>
+              <option value="morning_brief">Morning</option>
+              <option value="midday_catch_up">Midday</option>
+              <option value="daily_digest">Digest</option>
+            </select>
+            <select value={rebuildTimezone} onChange={(event) => setRebuildTimezone(event.target.value)}>
+              <option value="America/New_York">NYC</option>
+              <option value="Asia/Kolkata">India</option>
+            </select>
+            <ActionButton
+              busy={isRebuildingFeed}
+              busyLabel="Rebuilding..."
+              disabled={!selectedUserId}
+              onClick={rebuild}
+            >
+              Rebuild feed
+            </ActionButton>
+          </div>
+          {selectedFeedLoading ? <InlineState message="Loading selected feed..." /> : null}
+          <table className="feed-table">
+            <thead>
+              <tr>
+                <th>Edition</th>
                 <th>Rank</th>
                 <th>Title</th>
                 <th>Reason</th>
@@ -497,7 +699,8 @@ function UsersPage({ api }: { api: Api }) {
             </thead>
             <tbody>
               {feed.map((item) => (
-                <tr key={`${item.rank_position}-${item.article_id}`}>
+                <tr key={`${item.feed_date}-${item.edition_type}-${item.rank_position}-${item.article_id}`}>
+                  <td>{editionLabel(item.edition_type)} · {item.market_timezone}</td>
                   <td>{item.rank_position}</td>
                   <td className="title-cell">{item.title}</td>
                   <td>{item.ranking_reason ?? "-"}</td>
@@ -519,6 +722,7 @@ function SchedulerPage({ api }: { api: Api }) {
   const [hour, setHour] = useState(7);
   const [minute, setMinute] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [isAddingSchedule, setIsAddingSchedule] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -537,18 +741,23 @@ function SchedulerPage({ api }: { api: Api }) {
 
   async function createSchedule(event: FormEvent) {
     event.preventDefault();
-    await api.post("/api/admin/schedules", {
-      name,
-      enabled: true,
-      schedule_type: "full_pipeline",
-      hour,
-      minute,
-      countries: ["us", "in"],
-      categories: [],
-      summary_limit: 100,
-      force_feeds: true,
-    });
-    await refresh();
+    setIsAddingSchedule(true);
+    try {
+      await api.post("/api/admin/schedules", {
+        name,
+        enabled: true,
+        schedule_type: "full_pipeline",
+        hour,
+        minute,
+        countries: ["us", "in"],
+        categories: [],
+        summary_limit: 100,
+        force_feeds: true,
+      });
+      await refresh();
+    } finally {
+      setIsAddingSchedule(false);
+    }
   }
 
   return (
@@ -570,7 +779,9 @@ function SchedulerPage({ api }: { api: Api }) {
           value={minute}
           onChange={(event) => setMinute(Number(event.target.value))}
         />
-        <button type="submit">Add schedule</button>
+        <ActionButton type="submit" busy={isAddingSchedule} busyLabel="Adding...">
+          Add schedule
+        </ActionButton>
       </form>
       {loading ? <InlineState message="Loading schedules..." /> : null}
       <table>
@@ -616,8 +827,42 @@ function EmptyState({ message }: { message: string }) {
   return <div className="empty-state">{message}</div>;
 }
 
-function InlineState({ message }: { message: string }) {
-  return <div className="inline-state">{message}</div>;
+function InlineState({ message, tone }: { message: string; tone?: "success" }) {
+  return <div className={`inline-state ${tone ?? ""}`}>{message}</div>;
+}
+
+function ActionButton({
+  busy,
+  busyLabel = "Working...",
+  children,
+  disabled,
+  type = "button",
+  onClick,
+}: {
+  busy?: boolean;
+  busyLabel?: string;
+  children: React.ReactNode;
+  disabled?: boolean;
+  type?: "button" | "submit";
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type={type}
+      className={busy ? "is-busy" : ""}
+      disabled={busy || disabled}
+      onClick={onClick}
+    >
+      {busy ? (
+        <>
+          <span className="spinner" aria-hidden="true" />
+          {busyLabel}
+        </>
+      ) : (
+        children
+      )}
+    </button>
+  );
 }
 
 function Metric({ label, value, tone }: { label: string; value: number; tone?: "bad" }) {
@@ -700,6 +945,48 @@ function labelForTab(tab: Tab) {
     users: "Users",
     scheduler: "Scheduler",
   }[tab];
+}
+
+function editionLabel(value: string) {
+  if (value === "morning_brief") return "Morning";
+  if (value === "midday_catch_up") return "Midday";
+  if (value === "daily_digest") return "Digest";
+  if (value === "all") return "All editions";
+  return value;
+}
+
+function describeRunOptions(metadata: Record<string, unknown>) {
+  const options = metadata.options;
+  const optionMap =
+    options && typeof options === "object" ? (options as Record<string, unknown>) : {};
+  const pieces = [
+    optionMap.edition_type ? editionLabel(String(optionMap.edition_type)) : null,
+    optionMap.market_timezone ? String(optionMap.market_timezone) : null,
+    optionMap.feed_date ? String(optionMap.feed_date) : null,
+    optionMap.run_ingestion_first ? "fetch first" : null,
+    optionMap.summarize_first ? "summarize first" : null,
+  ].filter(Boolean);
+  const ingestion = metadata.ingestion;
+  if (ingestion && typeof ingestion === "object") {
+    const byCountry = (ingestion as Record<string, unknown>).by_country;
+    if (byCountry && typeof byCountry === "object") {
+      pieces.push(describeCountryBreakdown(byCountry as Record<string, unknown>));
+    }
+  }
+  return pieces.length ? pieces.join(" · ") : "-";
+}
+
+function describeCountryBreakdown(byCountry: Record<string, unknown>) {
+  return Object.entries(byCountry)
+    .map(([country, value]) => {
+      if (!value || typeof value !== "object") return null;
+      const counts = value as Record<string, unknown>;
+      return `${country.toUpperCase()}: ${counts.fetched ?? 0} fetched, ${
+        counts.inserted ?? 0
+      } inserted`;
+    })
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function formatDate(value: string | null) {

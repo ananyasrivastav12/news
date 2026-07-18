@@ -1,8 +1,9 @@
 from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.model import InteractionType
+from app.services.summarizer import ArticleSummarizer
 
 
 class SummaryOut(BaseModel):
@@ -10,6 +11,13 @@ class SummaryOut(BaseModel):
     supporting_lines: list[str]
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("main_takeaway")
+    @classmethod
+    def display_complete_sentences(cls, value: str) -> str:
+        return ArticleSummarizer._fit_paragraph(
+            ArticleSummarizer._drop_truncated_sentences(value)
+        )
 
 
 class FeedArticle(BaseModel):
@@ -30,6 +38,8 @@ class FeedArticle(BaseModel):
 class FeedItem(BaseModel):
     id: int
     feed_date: date
+    edition_type: str
+    market_timezone: str
     rank_position: int
     ranking_score: float
     ranking_reason: str | None
@@ -37,6 +47,25 @@ class FeedItem(BaseModel):
     article: FeedArticle
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class FeedEditionOut(BaseModel):
+    feed_date: date
+    edition_type: str
+    title: str
+    market_timezone: str
+    expected_publish_at: datetime
+    is_ready: bool
+    total: int
+    unread: int
+    completed: bool
+
+
+class FeedEditionsResponse(BaseModel):
+    selected_feed_date: date | None
+    selected_edition_type: str | None
+    market_timezone: str
+    editions: list[FeedEditionOut]
 
 
 class InteractionCreate(BaseModel):

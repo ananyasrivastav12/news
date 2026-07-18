@@ -1,5 +1,4 @@
 import logging
-from datetime import date
 from typing import List
 
 from fastapi import APIRouter, Depends
@@ -9,7 +8,7 @@ from app.api.dependencies import get_current_user, get_db
 from app.crud import interest as crud_interest
 from app.db import model as db_model
 from app.schemas import interest as interest_schema
-from app.services.recommendations import build_today_feed
+from app.services.recommendations import invalidate_unread_feeds_for_user
 from app.services.user_profile import sync_explicit_interests
 
 router = APIRouter()
@@ -43,23 +42,18 @@ def update_user_interests(
     )
     selected_interests = crud_interest.get_user_interests(db, user_id=current_user.id)
     sync_explicit_interests(db, user=current_user, interests=selected_interests)
-    db.commit()
-    db.expire(current_user)
 
     selected_interest_ids = {interest.id for interest in selected_interests}
     if selected_interest_ids != previous_interests:
-        rebuilt_feed = build_today_feed(
-            db,
-            user=current_user,
-            feed_date=date.today(),
-            force_refresh=True,
-        )
+        invalidate_unread_feeds_for_user(db, user=current_user)
         logger.info(
-            "Rebuilt feed after interest update for user_id=%s interests=%s "
-            "feed_items=%s",
+            "Updated interests for user_id=%s interests=%s. Feed will be "
+            "ranked lazily on next feed load.",
             current_user.id,
             [interest.name for interest in selected_interests],
-            len(rebuilt_feed),
         )
+
+    db.commit()
+    db.expire(current_user)
 
     return selected_interests

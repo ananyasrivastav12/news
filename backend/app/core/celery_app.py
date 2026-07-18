@@ -10,12 +10,10 @@ celery = Celery(
     include=["app.tasks"],
 )
 
-celery.conf.timezone = "America/New_York"
+celery.conf.timezone = "UTC"
 celery.conf.beat_schedule = {
-    "daily-news-pipeline": {
-        "task": "app.tasks.news_fetching.run_daily_pipeline_task",
-        "schedule": crontab(
-            hour=settings.MORNING_FEED_HOUR, minute=settings.MORNING_FEED_MINUTE
-        ),
+    "feed-edition-dispatcher": {
+        "task": "app.tasks.news_fetching.dispatch_scheduled_editions_task",
+        "schedule": crontab(minute="*/15"),
     },
 }

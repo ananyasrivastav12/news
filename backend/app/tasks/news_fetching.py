@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timezone
+from math import ceil
+from typing import Any
 
-from sqlalchemy import desc
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.celery_app import celery
@@ -19,8 +21,19 @@ from app.services.article_pipeline import (
     upsert_article,
 )
 from app.services.embeddings import EmbeddingService
+from app.services.feed_editions import (
+    DEFAULT_TIMEZONE,
+    EDITION_BY_TYPE,
+    EDITION_DEFINITIONS,
+    MORNING_BRIEF,
+    is_edition_due,
+    local_feed_date,
+    local_now,
+    normalize_timezone,
+    validate_edition_type,
+)
 from app.services.news import NewsApiService
-from app.services.recommendations import persist_feed, rank_articles_for_user
+from app.services.recommendations import build_today_feed
 from app.services.summarizer import ArticleSummarizer
 
 
@@ -36,23 +49,71 @@ def _get_batch_countries() -> list[str]:
     return settings.news_api_countries
 
 
-async def _async_ingest_news(db: Session) -> dict[str, int]:
+def _country_query_term(country: str) -> str:
+    if country.lower() == "in":
+        return "India"
+    if country.lower() == "us":
+        return "United States"
+    return country
+
+
+async def _fetch_country_category_articles(
+    service: NewsApiService,
+    *,
+    country: str,
+    category: str,
+) -> tuple[list[dict], str]:
+    default_country = settings.NEWS_API_COUNTRY.lower()
+    if country.lower() == default_country:
+        articles = await service.fetch_top_headlines(
+            category=category,
+            country=country,
+        )
+        return articles, "top-headlines-country"
+
+    articles = await service.fetch_top_headlines_for_country_sources(
+        category=category,
+        country=country,
+    )
+    if articles:
+        return articles, "top-headlines-sources"
+
+    query = _country_query_term(country)
+    if category != "general":
+        query = f"{query} {category}"
+    articles = await service.fetch_everything(
+        query=query,
+        country=country,
+    )
+    return articles, "everything-query"
+
+
+async def _async_ingest_news(db: Session) -> dict[str, Any]:
     service = NewsApiService()
     categories = _get_batch_categories()
     countries = _get_batch_countries()
     fetched = 0
     inserted = 0
     target = max(1, settings.NEWS_DAILY_ARTICLE_TARGET)
+    per_country_target = max(1, ceil(target / max(1, len(countries))))
+    by_country: dict[str, dict[str, int]] = {
+        country: {"fetched": 0, "inserted": 0} for country in countries
+    }
+    by_strategy: dict[str, int] = {}
 
     for country in countries:
+        country_inserted = 0
         for category in categories:
-            articles = await service.fetch_top_headlines(
-                category=category,
+            articles, strategy = await _fetch_country_category_articles(
+                service,
                 country=country,
+                category=category,
             )
+            by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
             fetched += len(articles)
+            by_country[country]["fetched"] += len(articles)
             for raw_article in articles:
-                if inserted >= target:
+                if country_inserted >= per_country_target:
                     break
                 if not is_valid_article(raw_article):
                     continue
@@ -61,19 +122,22 @@ async def _async_ingest_news(db: Session) -> dict[str, int]:
                     continue
                 upsert_article(db, normalized)
                 inserted += 1
+                country_inserted += 1
+                by_country[country]["inserted"] += 1
             db.commit()
-            if inserted >= target:
+            if country_inserted >= per_country_target:
                 break
-        if inserted >= target:
-            break
 
     pruned = _prune_article_pool(db)
     return {
         "fetched": fetched,
         "inserted": inserted,
         "target": target,
+        "per_country_target": per_country_target,
         "pruned": pruned,
         "countries": len(countries),
+        "by_country": by_country,
+        "by_strategy": by_strategy,
         "requests_planned": len(countries) * len(categories),
     }
 
@@ -81,13 +145,12 @@ async def _async_ingest_news(db: Session) -> dict[str, int]:
 def _prune_article_pool(db: Session) -> int:
     pool_limit = max(1, settings.ARTICLE_POOL_LIMIT)
     saved_article_ids = (
-        db.query(db_model.UserArticleInteraction.article_id)
-        .filter(
+        select(db_model.UserArticleInteraction.article_id)
+        .where(
             db_model.UserArticleInteraction.interaction_type
             == db_model.InteractionType.SAVE
         )
         .distinct()
-        .subquery()
     )
     article_ids_to_prune = [
         article_id
@@ -135,13 +198,10 @@ async def _async_summarize_articles(
 ) -> dict[str, int]:
     summarizer = ArticleSummarizer()
     embedding_service = EmbeddingService()
-    query = db.query(db_model.Article)
-    if not force_refresh:
-        query = query.filter(
-            db_model.Article.summary_status == db_model.SummaryStatus.PENDING
-        )
-    pending_articles = (
-        query.order_by(db_model.Article.published_at.desc()).limit(limit).all()
+    pending_articles = _select_articles_for_summarization(
+        db,
+        limit=limit,
+        force_refresh=force_refresh,
     )
 
     processed = 0
@@ -183,38 +243,80 @@ async def _async_summarize_articles(
     return {"processed": processed, "failed": failed}
 
 
+def _select_articles_for_summarization(
+    db: Session, *, limit: int, force_refresh: bool
+) -> list[db_model.Article]:
+    limit = max(1, limit)
+    countries = _get_batch_countries()
+    per_country_limit = max(1, ceil(limit / max(1, len(countries))))
+    selected: list[db_model.Article] = []
+    selected_ids: set[int] = set()
+
+    for country in countries:
+        query = db.query(db_model.Article).filter(
+            db_model.Article.country == country.lower()
+        )
+        if not force_refresh:
+            query = query.filter(
+                db_model.Article.summary_status == db_model.SummaryStatus.PENDING
+            )
+        for article in (
+            query.order_by(db_model.Article.published_at.desc())
+            .limit(per_country_limit)
+            .all()
+        ):
+            selected.append(article)
+            selected_ids.add(article.id)
+
+    query = db.query(db_model.Article)
+    if not force_refresh:
+        query = query.filter(
+            db_model.Article.summary_status == db_model.SummaryStatus.PENDING
+        )
+    if selected_ids:
+        query = query.filter(db_model.Article.id.notin_(selected_ids))
+    selected.extend(
+        query.order_by(db_model.Article.published_at.desc())
+        .limit(max(0, limit - len(selected)))
+        .all()
+    )
+    return selected[:limit]
+
+
 def _build_user_feed(
-    db: Session, user: db_model.User, feed_date: date, *, force_refresh: bool = False
+    db: Session,
+    user: db_model.User,
+    feed_date: date,
+    *,
+    edition_type: str = MORNING_BRIEF,
+    market_timezone: str = DEFAULT_TIMEZONE,
+    force_refresh: bool = False,
 ) -> int:
-    existing_count = (
+    validate_edition_type(edition_type)
+    market_timezone = normalize_timezone(market_timezone)
+    build_today_feed(
+        db,
+        user=user,
+        feed_date=feed_date,
+        edition_type=edition_type,
+        market_timezone=market_timezone,
+        force_refresh=force_refresh,
+    )
+    return (
         db.query(db_model.Flashcard)
         .filter(
             db_model.Flashcard.user_id == user.id,
             db_model.Flashcard.feed_date == feed_date,
+            db_model.Flashcard.edition_type == edition_type,
+            db_model.Flashcard.market_timezone == market_timezone,
+            db_model.Flashcard.rank_position <= settings.feed_edition_size,
         )
         .count()
     )
-    if existing_count and not force_refresh:
-        return existing_count
-
-    if force_refresh:
-        (
-            db.query(db_model.Flashcard)
-            .filter(
-                db_model.Flashcard.user_id == user.id,
-                db_model.Flashcard.feed_date == feed_date,
-            )
-            .delete(synchronize_session=False)
-        )
-        db.flush()
-    ranked = rank_articles_for_user(db, user=user)
-    persist_feed(db, user=user, ranked_articles=ranked, feed_date=feed_date)
-    db.commit()
-    return len(ranked)
 
 
 @celery.task
-def fetch_news_task() -> dict[str, int]:
+def fetch_news_task() -> dict[str, Any]:
     db = SessionLocal()
     try:
         return asyncio.run(_async_ingest_news(db))
@@ -224,12 +326,16 @@ def fetch_news_task() -> dict[str, int]:
 
 @celery.task
 def summarize_articles_task(
-    limit: int = 100, force_refresh: bool = False
+    limit: int | None = None, force_refresh: bool = False
 ) -> dict[str, int]:
     db = SessionLocal()
     try:
         return asyncio.run(
-            _async_summarize_articles(db, limit=limit, force_refresh=force_refresh)
+            _async_summarize_articles(
+                db,
+                limit=max(1, limit or settings.OPENAI_DAILY_SUMMARY_LIMIT),
+                force_refresh=force_refresh,
+            )
         )
     finally:
         db.close()
@@ -241,9 +347,30 @@ def generate_morning_feeds_task(
     force_refresh: bool = False,
     summarize_first: bool = False,
     summary_limit: int = 100,
-) -> dict[str, int]:
+) -> dict[str, int | str]:
+    return generate_feed_edition_task(
+        feed_date_iso=feed_date_iso,
+        edition_type=MORNING_BRIEF,
+        market_timezone=DEFAULT_TIMEZONE,
+        force_refresh=force_refresh,
+        summarize_first=summarize_first,
+        summary_limit=summary_limit,
+    )
+
+
+@celery.task
+def generate_feed_edition_task(
+    feed_date_iso: str | None = None,
+    edition_type: str = MORNING_BRIEF,
+    market_timezone: str = DEFAULT_TIMEZONE,
+    force_refresh: bool = False,
+    summarize_first: bool = False,
+    summary_limit: int = 100,
+) -> dict[str, int | str]:
     db = SessionLocal()
     try:
+        validate_edition_type(edition_type)
+        market_timezone = normalize_timezone(market_timezone)
         summarization = None
         if summarize_first:
             summarization = asyncio.run(
@@ -255,7 +382,9 @@ def generate_morning_feeds_task(
             )
 
         target_date = (
-            date.fromisoformat(feed_date_iso) if feed_date_iso else date.today()
+            date.fromisoformat(feed_date_iso)
+            if feed_date_iso
+            else local_feed_date(market_timezone)
         )
         users = (
             db.query(db_model.User)
@@ -275,9 +404,20 @@ def generate_morning_feeds_task(
         feed_count = 0
         for user in users:
             feed_count += _build_user_feed(
-                db, user, target_date, force_refresh=force_refresh
+                db,
+                user,
+                target_date,
+                edition_type=edition_type,
+                market_timezone=market_timezone,
+                force_refresh=force_refresh,
             )
-        result = {"users": len(users), "feed_items": feed_count}
+        result: dict[str, int | str] = {
+            "users": len(users),
+            "feed_items": feed_count,
+            "edition_type": edition_type,
+            "feed_date": target_date.isoformat(),
+            "market_timezone": market_timezone,
+        }
         if summarization is not None:
             result["summarized"] = summarization["processed"]
             result["summary_failures"] = summarization["failed"]
@@ -290,12 +430,63 @@ def generate_morning_feeds_task(
 def run_daily_pipeline_task() -> dict[str, object]:
     ingestion = fetch_news_task()
     summarization = summarize_articles_task()
-    feeds = generate_morning_feeds_task(force_refresh=True, summarize_first=False)
     return {
         "ingestion": ingestion,
         "summarization": summarization,
-        "feeds": feeds,
+        "feeds": {
+            "skipped": True,
+            "reason": "Feeds are ranked lazily per user when the app loads.",
+        },
     }
+
+
+@celery.task
+def run_edition_pipeline_task(
+    edition_type: str,
+    market_timezone: str = DEFAULT_TIMEZONE,
+    feed_date_iso: str | None = None,
+    force_refresh: bool = False,
+) -> dict[str, object]:
+    validate_edition_type(edition_type)
+    market_timezone = normalize_timezone(market_timezone)
+    ingestion = fetch_news_task()
+    summarization = summarize_articles_task()
+    return {
+        "ingestion": ingestion,
+        "summarization": summarization,
+        "feeds": {
+            "skipped": True,
+            "edition_type": edition_type,
+            "market_timezone": market_timezone,
+            "feed_date": feed_date_iso,
+            "reason": "Feeds are ranked lazily per user when the app loads.",
+        },
+    }
+
+
+@celery.task
+def dispatch_scheduled_editions_task() -> dict[str, object]:
+    queued: list[dict[str, str]] = []
+    for market_timezone in settings.feed_market_timezones:
+        normalized_timezone = normalize_timezone(market_timezone)
+        now = local_now(normalized_timezone)
+        for definition in EDITION_DEFINITIONS:
+            if is_edition_due(now, definition.edition_type):
+                run_edition_pipeline_task.delay(
+                    definition.edition_type,
+                    normalized_timezone,
+                    now.date().isoformat(),
+                    False,
+                )
+                queued.append(
+                    {
+                        "edition_type": definition.edition_type,
+                        "title": EDITION_BY_TYPE[definition.edition_type].title,
+                        "feed_date": now.date().isoformat(),
+                        "market_timezone": normalized_timezone,
+                    }
+                )
+    return {"queued": queued, "count": len(queued)}
 
 
 @celery.task

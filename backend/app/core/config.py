@@ -15,24 +15,34 @@ class Settings(BaseSettings):
     NEWS_API_COUNTRIES: str = Field(default="us,in")
     NEWS_API_PAGE_SIZE: int = Field(default=100)
     NEWS_DAILY_ARTICLE_TARGET: int = Field(default=250)
-    ARTICLE_POOL_LIMIT: int = Field(default=500)
+    ARTICLE_POOL_LIMIT: int = Field(default=1000)
     NEWS_BATCH_CATEGORIES: str = Field(
         default="business,technology,health,sports,entertainment,science,general"
     )
     ARTICLE_MAX_AGE_HOURS: int = Field(default=168)
     MIN_ARTICLE_TEXT_LENGTH: int = Field(default=60)
-    FEED_SIZE: int = Field(default=12)
+    FEED_SIZE: int = Field(default=50)
+    FEED_EDITION_SIZE: int = Field(default=50)
     FEED_EXPLORATION_RATIO: float = Field(default=0.25)
     MAX_FEED_ITEMS: int = Field(default=500)
     MORNING_FEED_HOUR: int = Field(default=7)
     MORNING_FEED_MINUTE: int = Field(default=0)
+    MIDDAY_FEED_HOUR: int = Field(default=16)
+    MIDDAY_FEED_MINUTE: int = Field(default=0)
+    DIGEST_FEED_HOUR: int = Field(default=21)
+    DIGEST_FEED_MINUTE: int = Field(default=0)
+    FEED_MARKET_TIMEZONES: str = Field(default="America/New_York,Asia/Kolkata")
 
     OPENAI_API_KEY: str | None = Field(default=None)
     OPENAI_MODEL: str = Field(default="gpt-4.1-mini")
     OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
+    OPENAI_DAILY_SUMMARY_LIMIT: int = Field(default=250)
 
     GOOGLE_CLIENT_IDS: str = Field(default="")
     ADMIN_EMAILS: str = Field(default="")
+    ADMIN_BOOTSTRAP_EMAIL: str = Field(default="")
+    ADMIN_BOOTSTRAP_PASSWORD: str = Field(default="")
+    ENABLE_PUBLIC_SIGNUP: bool = Field(default=False)
 
     REDIS_URL: str = Field(default="redis://redis:6379/0")
     BACKEND_CORS_ORIGINS: str = Field(default="*")
@@ -59,11 +69,14 @@ class Settings(BaseSettings):
 
     @property
     def admin_emails(self) -> set[str]:
-        return {
+        configured = {
             email.strip().lower()
             for email in self.ADMIN_EMAILS.split(",")
             if email.strip()
         }
+        if self.ADMIN_BOOTSTRAP_EMAIL.strip():
+            configured.add(self.ADMIN_BOOTSTRAP_EMAIL.strip().lower())
+        return configured
 
     @property
     def news_api_countries(self) -> list[str]:
@@ -75,6 +88,18 @@ class Settings(BaseSettings):
         if configured:
             return configured
         return [self.NEWS_API_COUNTRY.lower()]
+
+    @property
+    def feed_market_timezones(self) -> list[str]:
+        return [
+            timezone.strip()
+            for timezone in self.FEED_MARKET_TIMEZONES.split(",")
+            if timezone.strip()
+        ]
+
+    @property
+    def feed_edition_size(self) -> int:
+        return max(1, self.FEED_EDITION_SIZE)
 
 
 settings = Settings()

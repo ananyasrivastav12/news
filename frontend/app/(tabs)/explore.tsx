@@ -1,6 +1,4 @@
-import * as Google from 'expo-auth-session/providers/google';
 import { useRouter } from 'expo-router';
-import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -20,17 +18,13 @@ import {
   Interest,
   ProfileSummary,
   SavedArticle,
-  createUser,
   fetchInterests,
   fetchMyInterests,
   fetchProfileSummary,
   fetchSavedArticles,
   login,
-  loginWithGoogle,
   updateInterests,
 } from '@/lib/api';
-
-WebBrowser.maybeCompleteAuthSession();
 
 type Step = 'account' | 'interests' | 'ready';
 type Tone = 'info' | 'success' | 'error';
@@ -72,10 +66,12 @@ export default function SetupScreen() {
     userEmail,
     setUserEmail,
   } = useAppSession();
-  const [password, setPassword] = useState('TestPassword123');
+  const [password, setPassword] = useState('');
   const [interests, setInterests] = useState<Interest[]>([]);
   const [selectedInterestIds, setSelectedInterestIds] = useState<number[]>([]);
+  const [savedInterestIds, setSavedInterestIds] = useState<number[]>([]);
   const [loading, setLoading] = useState(false);
+  const [refreshingInterests, setRefreshingInterests] = useState(false);
   const [step, setStep] = useState<Step>(accessToken ? 'ready' : 'account');
   const [status, setStatus] = useState<StatusMessage>({
     tone: 'info',
@@ -84,16 +80,6 @@ export default function SetupScreen() {
   const [savedArticles, setSavedArticles] = useState<SavedArticle[]>([]);
   const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
   const routeToFeedAfterAuth = useRef(false);
-  const googleAuthConfigured = Boolean(
-    process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID ||
-      process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID ||
-      process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID
-  );
-  const [googleRequest, googleResponse, promptGoogleAuth] = Google.useAuthRequest({
-    androidClientId: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID,
-    iosClientId: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID,
-    webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
-  });
 
   const newsInterests = useMemo(
     () => interests.filter((interest) => interest.source_type === 'news'),
@@ -114,6 +100,7 @@ export default function SetupScreen() {
     (message = 'Signed out. Choose a login method to continue.') => {
       clearSession();
       setSelectedInterestIds([]);
+      setSavedInterestIds([]);
       setSavedArticles([]);
       setProfileSummary(null);
       setStep('account');
@@ -145,12 +132,15 @@ export default function SetupScreen() {
   const loadMyInterests = useCallback(async () => {
     if (!accessToken) {
       setSelectedInterestIds([]);
+      setSavedInterestIds([]);
       return [];
     }
 
     try {
       const selected = await fetchMyInterests(apiBaseUrl, accessToken);
-      setSelectedInterestIds(selected.map((interest) => interest.id));
+      const selectedIds = selected.map((interest) => interest.id);
+      setSelectedInterestIds(selectedIds);
+      setSavedInterestIds(selectedIds);
       if (selected.length > 0) {
         setStep('ready');
         showStatus('success', `Welcome back. Your profile is tuned to ${selected.length} topics.`);
@@ -244,70 +234,6 @@ export default function SetupScreen() {
     addLog(`Logged in ${email}`);
   }
 
-  useEffect(() => {
-    async function finishGoogleLogin(idToken: string) {
-      setLoading(true);
-      try {
-        addLog('Logging in with Google');
-        const response = await loginWithGoogle(apiBaseUrl, { id_token: idToken });
-        routeToFeedAfterAuth.current = true;
-        setAccessToken(response.access_token);
-        if (response.email) {
-          setUserEmail(response.email);
-        }
-        showStatus('success', 'Google sign-in complete. Loading your profile now.');
-      } catch (error) {
-        const message = getErrorMessage(error);
-        addLog(`Google login failed: ${message}`);
-        showStatus('error', `Could not sign in with Google: ${message}`);
-      } finally {
-        setLoading(false);
-      }
-    }
-
-    if (googleResponse?.type !== 'success') return;
-    const idToken = googleResponse.authentication?.idToken;
-    if (!idToken) {
-      showStatus('error', 'Google did not return an ID token.');
-      return;
-    }
-    void finishGoogleLogin(idToken);
-  }, [
-    addLog,
-    apiBaseUrl,
-    googleResponse,
-    setAccessToken,
-    setUserEmail,
-    showStatus,
-  ]);
-
-  async function handleCreateUser() {
-    const email = userEmail.trim();
-    if (!email) {
-      showStatus('error', 'Enter an email before creating an account.');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      addLog(`Creating account ${email}`);
-      await createUser(apiBaseUrl, { email, password });
-      showStatus('success', 'Account created. Logging you in now.');
-      addLog(`Created account ${email}`);
-      await loginAndContinue(email);
-    } catch (error) {
-      const message = getErrorMessage(error);
-      addLog(`Create failed: ${message}`);
-      if (message.toLowerCase().includes('already registered')) {
-        showStatus('info', 'That account already exists. Tap Log in to continue with it.');
-      } else {
-        showStatus('error', `Could not create account: ${message}`);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function handleLogin() {
     const email = userEmail.trim();
     if (!email) {
@@ -342,9 +268,12 @@ export default function SetupScreen() {
     try {
       addLog(`Saving ${selectedInterestIds.length} interests`);
       const saved = await updateInterests(apiBaseUrl, accessToken, selectedInterestIds);
+      const savedIds = saved.map((interest) => interest.id);
+      setSelectedInterestIds(savedIds);
+      setSavedInterestIds(savedIds);
       setStep('ready');
-      showStatus('success', `Saved ${saved.length} topics. Your feed was rebuilt.`);
-      addLog(`Saved ${saved.length} interests and rebuilt the feed`);
+      showStatus('success', `Saved ${saved.length} topics. Refresh the feed to rerank unread cards.`);
+      addLog(`Saved ${saved.length} interests`);
       await loadProfileSummary();
       router.replace('/');
     } catch (error) {
@@ -357,6 +286,28 @@ export default function SetupScreen() {
   }
 
   const canPickInterests = step === 'interests' || step === 'ready';
+  const selectedInterestKey = useMemo(
+    () => [...selectedInterestIds].sort((a, b) => a - b).join(','),
+    [selectedInterestIds]
+  );
+  const savedInterestKey = useMemo(
+    () => [...savedInterestIds].sort((a, b) => a - b).join(','),
+    [savedInterestIds]
+  );
+  const hasUnsavedInterestChanges =
+    canPickInterests && selectedInterestKey !== savedInterestKey;
+
+  const refreshInterestOptions = useCallback(async () => {
+    setRefreshingInterests(true);
+    try {
+      const items = await loadInterests();
+      if (items.length > 0) {
+        showStatus('success', 'Interest options refreshed.');
+      }
+    } finally {
+      setRefreshingInterests(false);
+    }
+  }, [loadInterests, showStatus]);
 
   if (!sessionReady) {
     return (
@@ -375,16 +326,16 @@ export default function SetupScreen() {
           <Text style={styles.kicker}>Personal news, tuned by you</Text>
           <Text style={styles.title}>
             {step === 'account'
-              ? 'Create your reader'
+              ? 'Beta sign in'
               : step === 'interests'
                 ? 'Pick your lanes'
                 : 'Profile'}
           </Text>
           <Text style={styles.subtitle}>
             {step === 'account'
-              ? 'Sign in first. The app will move you forward when the backend confirms it.'
+              ? 'Use the beta credentials you received, then choose the topics that should shape your feed.'
               : step === 'interests'
-                ? 'Tap a few topics that should shape your morning cards.'
+                ? 'Tap a few topics that should shape your daily editions.'
                 : 'Manage interests, check personalization signals, and revisit saved stories.'}
           </Text>
         </View>
@@ -428,7 +379,10 @@ export default function SetupScreen() {
 
         {step === 'account' ? (
           <View style={styles.panel}>
-            <Text style={styles.sectionTitle}>Account</Text>
+            <Text style={styles.sectionTitle}>Invite-only beta</Text>
+            <Text style={styles.bodyText}>
+              Enter the email and temporary password sent with your beta invite.
+            </Text>
             <TextInput
               value={userEmail}
               onChangeText={setUserEmail}
@@ -455,39 +409,14 @@ export default function SetupScreen() {
                   pressed && styles.buttonPressed,
                   loading && styles.buttonDisabled,
                 ]}
-                onPress={() => void handleCreateUser()}
-              >
-                <Text style={styles.primaryButtonText}>Create account</Text>
-              </Pressable>
-              <Pressable
-                disabled={loading}
-                style={({ pressed }) => [
-                  styles.secondaryButton,
-                  pressed && styles.buttonPressed,
-                  loading && styles.buttonDisabled,
-                ]}
                 onPress={() => void handleLogin()}
               >
-                <Text style={styles.secondaryButtonText}>Log in</Text>
+                <Text style={styles.primaryButtonText}>Log in</Text>
               </Pressable>
             </View>
-            <Pressable
-              disabled={!googleAuthConfigured || !googleRequest || loading}
-              style={({ pressed }) => [
-                styles.googleButton,
-                pressed && styles.buttonPressed,
-                (!googleAuthConfigured || !googleRequest || loading) &&
-                  styles.buttonDisabled,
-              ]}
-              onPress={() => void promptGoogleAuth()}
-            >
-              <Text style={styles.googleButtonText}>Continue with Google</Text>
-            </Pressable>
-            {!googleAuthConfigured ? (
-              <Text style={styles.authHint}>
-                Add Google OAuth client IDs to enable Google sign-in.
-              </Text>
-            ) : null}
+            <Text style={styles.authHint}>
+              Need access? Request beta credentials from the project owner.
+            </Text>
           </View>
         ) : null}
 
@@ -499,11 +428,16 @@ export default function SetupScreen() {
                 <Text style={styles.sectionHint}>{selectedCount} selected</Text>
               </View>
               <Pressable
-                disabled={loading}
-                style={styles.smallButton}
-                onPress={() => void loadInterests()}
+                disabled={loading || refreshingInterests}
+                style={[
+                  styles.smallButton,
+                  (loading || refreshingInterests) && styles.buttonDisabled,
+                ]}
+                onPress={() => void refreshInterestOptions()}
               >
-                <Text style={styles.smallButtonText}>Refresh</Text>
+                <Text style={styles.smallButtonText}>
+                  {refreshingInterests ? 'Refreshing' : 'Refresh'}
+                </Text>
               </Pressable>
             </View>
 
@@ -528,7 +462,11 @@ export default function SetupScreen() {
               })}
             </View>
 
-            {step === 'interests' ? (
+            {hasUnsavedInterestChanges ? (
+              <Text style={styles.unsavedText}>Unsaved interest changes</Text>
+            ) : null}
+
+            {step === 'interests' || hasUnsavedInterestChanges ? (
               <Pressable
                 disabled={loading}
                 style={({ pressed }) => [
@@ -538,7 +476,9 @@ export default function SetupScreen() {
                 ]}
                 onPress={() => void handleSaveInterests()}
               >
-                <Text style={styles.primaryButtonText}>Save and continue</Text>
+                <Text style={styles.primaryButtonText}>
+                  {step === 'interests' ? 'Save and continue' : 'Save interests'}
+                </Text>
               </Pressable>
             ) : null}
           </View>
@@ -795,6 +735,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 22,
   },
+  unsavedText: {
+    color: '#9a3412',
+    fontSize: 13,
+    fontWeight: '800',
+  },
   statGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -854,15 +799,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 12,
   },
-  secondaryButton: {
-    flex: 1,
-    minHeight: 54,
-    borderRadius: 16,
-    backgroundColor: '#e8f1ff',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
   fullButton: {
     minHeight: 54,
     borderRadius: 16,
@@ -889,24 +825,6 @@ const styles = StyleSheet.create({
   },
   primaryButtonText: {
     color: '#fff',
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  secondaryButtonText: {
-    color: '#0b4fd6',
-    fontSize: 15,
-    fontWeight: '900',
-  },
-  googleButton: {
-    minHeight: 54,
-    borderRadius: 16,
-    backgroundColor: '#08090a',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 12,
-  },
-  googleButtonText: {
-    color: '#ffffff',
     fontSize: 15,
     fontWeight: '900',
   },
