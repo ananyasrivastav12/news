@@ -152,6 +152,7 @@ type Schedule = {
 };
 
 type Tab = "home" | "control" | "quality" | "users";
+type Tone = "neutral" | "good" | "warn" | "bad";
 
 const NAV_ITEMS: { id: Tab; label: string; description: string }[] = [
   {
@@ -365,28 +366,40 @@ function HomePage({ api }: { api: Api }) {
       </div>
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
       <div className="metric-grid">
-        <Metric label="Total articles" value={overview.total_articles} />
-        <Metric label="Fresh articles" value={overview.fresh_articles} />
-        <Metric label="Pending summaries" value={overview.pending_summaries} />
-        <Metric label="Completed summaries" value={overview.completed_summaries} />
-        <Metric label="Failed summaries" value={overview.failed_summaries} tone="bad" />
-        <Metric label="Feed items" value={overview.feed_items_generated} />
-        <Metric label="Users with feeds" value={overview.users_with_feeds} />
-        <Metric label="Target feed size" value={overview.current_feed_size} />
-        <Metric label="Article pool limit" value={overview.article_pool_limit} />
-        <Metric label="Max feed rows/user" value={overview.max_feed_items} />
-        <Metric label="NewsAPI planned" value={overview.newsapi_requests_planned} />
-        <Metric label="NewsAPI page size" value={overview.newsapi_page_size} />
-        <Metric label="Daily target" value={overview.newsapi_daily_target} />
-        <Metric label="Summary calls planned" value={overview.openai_summary_calls_planned} />
-        <Metric label="OpenAI summary limit" value={overview.openai_daily_summary_limit} />
-        <Metric label="Embedding calls planned" value={overview.openai_embedding_calls_planned} />
-        <Metric label="Views" value={overview.viewed_count} />
-        <Metric label="Saved" value={overview.saved_count} />
+        <MetricTile label="Total articles" value={overview.total_articles} />
+        <MetricTile label="Fresh articles" value={overview.fresh_articles} />
+        <MetricTile label="Pending summaries" value={overview.pending_summaries} />
+        <MetricTile label="Completed summaries" value={overview.completed_summaries} />
+        <MetricTile label="Failed summaries" value={overview.failed_summaries} tone="bad" />
+        <MetricTile label="Feed items" value={overview.feed_items_generated} />
+        <MetricTile label="Users with feeds" value={overview.users_with_feeds} />
+        <MetricTile label="Target feed size" value={overview.current_feed_size} />
+        <MetricTile label="Article pool limit" value={overview.article_pool_limit} />
+        <MetricTile label="Max feed rows/user" value={overview.max_feed_items} />
+        <MetricTile label="NewsAPI planned" value={overview.newsapi_requests_planned} />
+        <MetricTile label="NewsAPI page size" value={overview.newsapi_page_size} />
+        <MetricTile label="Daily target" value={overview.newsapi_daily_target} />
+        <MetricTile
+          label="Summary calls planned"
+          value={overview.openai_summary_calls_planned}
+        />
+        <MetricTile label="OpenAI summary limit" value={overview.openai_daily_summary_limit} />
+        <MetricTile
+          label="Embedding calls planned"
+          value={overview.openai_embedding_calls_planned}
+        />
+        <MetricTile label="Views" value={overview.viewed_count} />
+        <MetricTile label="Saved" value={overview.saved_count} />
       </div>
       <div className="status-strip">
-        <span>Last success: {formatDate(overview.last_successful_run_at)}</span>
-        <span>Next scheduled: {formatDate(overview.next_scheduled_run_at)}</span>
+        <StatusCard
+          label="Last success"
+          value={formatDate(overview.last_successful_run_at)}
+        />
+        <StatusCard
+          label="Next scheduled"
+          value={formatDate(overview.next_scheduled_run_at)}
+        />
       </div>
     </section>
   );
@@ -431,11 +444,10 @@ function UserCreatePanel({ api }: { api: Api }) {
   }
 
   return (
-    <section className="workspace-card">
-      <SectionHeader
+    <ActionPanel
         title="Beta Access"
         subtitle="Create a login. Users choose their own interests in the app."
-      />
+    >
       <form className="panel-form stacked-form" onSubmit={createUser}>
         <label>
           Beta email
@@ -463,7 +475,7 @@ function UserCreatePanel({ api }: { api: Api }) {
         </ActionButton>
       </form>
       {createStatus ? <InlineState message={createStatus} tone="success" /> : null}
-    </section>
+    </ActionPanel>
   );
 }
 
@@ -517,11 +529,10 @@ function PipelineRunsSection({ api }: { api: Api }) {
   }
 
   return (
-    <section className="workspace-card">
-      <SectionHeader
+    <ActionPanel
         title="Article Pipeline"
         subtitle="Refresh the shared article pool. Feeds are still ranked lazily per user."
-      />
+    >
       <div className="toolbar">
         <ActionButton
           busy={pendingAction === "Full pipeline"}
@@ -548,7 +559,7 @@ function PipelineRunsSection({ api }: { api: Api }) {
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
       {loading ? <InlineState message="Loading runs..." /> : null}
       <RunLegend />
-      <table>
+      <CompactTable minWidth={980}>
         <thead>
           <tr>
             <th>ID</th>
@@ -584,8 +595,8 @@ function PipelineRunsSection({ api }: { api: Api }) {
             </React.Fragment>
           ))}
         </tbody>
-      </table>
-    </section>
+      </CompactTable>
+    </ActionPanel>
   );
 }
 
@@ -733,7 +744,7 @@ function QualityPage({ api }: { api: Api }) {
       </div>
       {loading ? <InlineState message="Loading articles..." /> : null}
       {distribution ? <ArticleDistributionPanel distribution={distribution} /> : null}
-      <table>
+      <CompactTable>
         <thead>
           <tr>
             <th>Title</th>
@@ -769,7 +780,7 @@ function QualityPage({ api }: { api: Api }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </CompactTable>
     </section>
   );
 }
@@ -788,23 +799,18 @@ function ArticleDistributionPanel({
   );
 
   return (
-    <div className="quality-panel">
-      <div className="quality-header">
-        <div>
-          <h3>Feed Quality Observability</h3>
-          <p>
-            Pool snapshot by market, category, and market-category intersection.
-          </p>
-        </div>
-        <span>Fresh since {formatDate(distribution.fresh_cutoff)}</span>
-      </div>
+    <ChartPanel
+      title="Feed Quality Observability"
+      subtitle="Pool snapshot by market, category, and market-category intersection."
+      meta={`Fresh since ${formatDate(distribution.fresh_cutoff)}`}
+    >
       <div className="quality-summary">
-        <Metric label="Pool articles" value={distribution.totals.total_count} />
-        <Metric label="Fresh" value={distribution.totals.fresh_count} />
-        <Metric label="Completed" value={distribution.totals.completed_count} />
-        <Metric label="Pending" value={distribution.totals.pending_count} />
-        <Metric label="Failed" value={distribution.totals.failed_count} tone="bad" />
-        <Metric label="Images" value={distribution.totals.image_count} />
+        <MetricTile label="Pool articles" value={distribution.totals.total_count} />
+        <MetricTile label="Fresh" value={distribution.totals.fresh_count} />
+        <MetricTile label="Completed" value={distribution.totals.completed_count} />
+        <MetricTile label="Pending" value={distribution.totals.pending_count} />
+        <MetricTile label="Failed" value={distribution.totals.failed_count} tone="bad" />
+        <MetricTile label="Images" value={distribution.totals.image_count} />
       </div>
       <div className="quality-grid">
         <DistributionList
@@ -825,7 +831,7 @@ function ArticleDistributionPanel({
         />
       </div>
       <div className="matrix-wrap">
-        <table className="matrix-table">
+        <CompactTable className="matrix-table" minWidth={900}>
           <thead>
             <tr>
               <th>Market</th>
@@ -861,9 +867,9 @@ function ArticleDistributionPanel({
               </tr>
             ))}
           </tbody>
-        </table>
+        </CompactTable>
       </div>
-    </div>
+    </ChartPanel>
   );
 }
 
@@ -954,7 +960,7 @@ function UsersPage({ api }: { api: Api }) {
       {loading ? <InlineState message="Loading users..." /> : null}
       <div className="user-workspace">
         <div className="table-panel">
-          <table className="users-table">
+          <CompactTable className="users-table" minWidth={760}>
             <thead>
               <tr>
                 <th>Email</th>
@@ -979,7 +985,7 @@ function UsersPage({ api }: { api: Api }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </CompactTable>
         </div>
         <div className="inspector panel">
           <div className="toolbar compact">
@@ -1035,7 +1041,7 @@ function UsersPage({ api }: { api: Api }) {
               />
             </div>
           ) : null}
-          <table className="feed-table">
+          <CompactTable className="feed-table" minWidth={980}>
             <thead>
               <tr>
                 <th>Edition</th>
@@ -1058,7 +1064,7 @@ function UsersPage({ api }: { api: Api }) {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </CompactTable>
         </div>
       </div>
     </section>
@@ -1110,11 +1116,10 @@ function SchedulerPanel({ api }: { api: Api }) {
   }
 
   return (
-    <section className="workspace-card">
-      <SectionHeader
+    <ActionPanel
         title="Scheduler"
         subtitle="Backend schedule configuration for recurring jobs."
-      />
+    >
       <form className="toolbar schedule-form" onSubmit={createSchedule}>
         <input value={name} onChange={(event) => setName(event.target.value)} />
         <input
@@ -1136,7 +1141,7 @@ function SchedulerPanel({ api }: { api: Api }) {
         </ActionButton>
       </form>
       {loading ? <InlineState message="Loading schedules..." /> : null}
-      <table className="compact-table">
+      <CompactTable className="compact-table" minWidth={620}>
         <thead>
           <tr>
             <th>Name</th>
@@ -1161,8 +1166,8 @@ function SchedulerPanel({ api }: { api: Api }) {
             </tr>
           ))}
         </tbody>
-      </table>
-    </section>
+      </CompactTable>
+    </ActionPanel>
   );
 }
 
@@ -1189,10 +1194,10 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
 function RunLegend() {
   return (
     <div className="legend-grid">
-      <InlineState message="Fetched: raw articles returned by NewsAPI." />
-      <InlineState message="Inserted: new articles after validation and dedupe." />
-      <InlineState message="Summaries: articles summarized in this run." />
-      <InlineState message="Feeds are ranked per user when the mobile app loads." />
+      <StatusCard label="Fetched" value="Raw articles returned by NewsAPI." />
+      <StatusCard label="Inserted" value="New articles after validation and dedupe." />
+      <StatusCard label="Summaries" value="Articles summarized in this run." />
+      <StatusCard label="Feeds" value="Ranked per user when the mobile app loads." />
     </div>
   );
 }
@@ -1239,12 +1244,100 @@ function ActionButton({
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone?: "bad" }) {
+function MetricTile({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number;
+  tone?: Tone;
+}) {
   return (
-    <div className={`metric ${tone ?? ""}`}>
+    <div className={`metric-tile ${tone}`}>
       <span>{label}</span>
       <strong>{value.toLocaleString()}</strong>
     </div>
+  );
+}
+
+function StatusCard({
+  label,
+  value,
+  tone = "neutral",
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone?: Tone;
+}) {
+  return (
+    <div className={`status-card ${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function ChartPanel({
+  title,
+  subtitle,
+  meta,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  meta?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="chart-panel">
+      <div className="chart-panel-header">
+        <div>
+          <h3>{title}</h3>
+          <p>{subtitle}</p>
+        </div>
+        {meta ? <span>{meta}</span> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function CompactTable({
+  children,
+  className = "",
+  minWidth,
+}: {
+  children: React.ReactNode;
+  className?: string;
+  minWidth?: number;
+}) {
+  return (
+    <div className="compact-table-wrap">
+      <table
+        className={`compact-table ${className}`.trim()}
+        style={minWidth ? { minWidth } : undefined}
+      >
+        {children}
+      </table>
+    </div>
+  );
+}
+
+function ActionPanel({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="action-panel">
+      <SectionHeader title={title} subtitle={subtitle} />
+      {children}
+    </section>
   );
 }
 

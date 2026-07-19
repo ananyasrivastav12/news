@@ -224,7 +224,8 @@ select {
 }
 
 .home-hero,
-.workspace-card {
+.action-panel,
+.chart-panel {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-panel);
@@ -257,7 +258,8 @@ select {
   text-transform: uppercase;
 }
 
-.workspace-card {
+.action-panel,
+.chart-panel {
   min-width: 0;
   padding: 16px;
 }
@@ -298,7 +300,7 @@ select {
   background: var(--color-panel);
 }
 
-.workspace-card .panel-form {
+.action-panel .panel-form {
   margin-bottom: 12px;
   padding: 0;
   border: 0;
@@ -351,7 +353,7 @@ select {
   gap: 12px;
 }
 
-.metric {
+.metric-tile {
   display: grid;
   gap: 8px;
   min-height: 86px;
@@ -361,17 +363,25 @@ select {
   background: var(--color-panel);
 }
 
-.metric span {
+.metric-tile span {
   color: var(--color-muted);
   font-size: 13px;
 }
 
-.metric strong {
+.metric-tile strong {
   font-size: 28px;
 }
 
-.metric.bad strong {
+.metric-tile.bad strong {
   color: var(--color-danger);
+}
+
+.metric-tile.good strong {
+  color: #047857;
+}
+
+.metric-tile.warn strong {
+  color: #b45309;
 }
 
 .status-strip,
@@ -392,6 +402,41 @@ select {
   color: var(--color-danger);
 }
 
+.status-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.status-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.status-card span {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.status-card strong {
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.status-card.good strong {
+  color: #047857;
+}
+
+.status-card.warn strong {
+  color: #b45309;
+}
+
+.status-card.bad strong {
+  color: var(--color-danger);
+}
+
 .status.success {
   color: var(--color-success);
 }
@@ -400,6 +445,10 @@ select {
   margin: 0;
   color: var(--color-subtle);
   font-size: 12px;
+}
+
+.compact-table-wrap {
+  overflow-x: auto;
 }
 
 table {
@@ -495,25 +544,21 @@ tr:hover td {
   margin-bottom: 0;
 }
 
-.quality-panel {
+.chart-panel {
   display: grid;
   gap: 16px;
   margin-bottom: 16px;
-  padding: 14px;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-panel);
 }
 
-.quality-header {
+.chart-panel-header {
   display: flex;
   align-items: start;
   justify-content: space-between;
   gap: 16px;
 }
 
-.quality-header h3,
-.quality-header p,
+.chart-panel-header h3,
+.chart-panel-header p,
 .distribution-list h4,
 .distribution-list p,
 .run-details h4,
@@ -521,12 +566,12 @@ tr:hover td {
   margin: 0;
 }
 
-.quality-header h3 {
+.chart-panel-header h3 {
   font-size: 18px;
 }
 
-.quality-header p,
-.quality-header span,
+.chart-panel-header p,
+.chart-panel-header span,
 .distribution-row span,
 .distribution-counts span,
 .run-breakdown p,
@@ -544,12 +589,12 @@ tr:hover td {
   gap: 10px;
 }
 
-.quality-summary .metric {
+.quality-summary .metric-tile {
   min-height: 72px;
   padding: 12px;
 }
 
-.quality-summary .metric strong {
+.quality-summary .metric-tile strong {
   font-size: 24px;
 }
 
