@@ -1,5 +1,5 @@
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("SECRET_KEY", "test-secret")
@@ -12,8 +12,20 @@ from sqlalchemy.pool import StaticPool
 
 from app.api.dependencies import get_db
 from app.core.security import get_password_hash
-from app.db.model import Base, Flashcard, Interest, SourceType, User
+from app.db.model import (
+    Article,
+    Base,
+    Flashcard,
+    Interest,
+    SourceType,
+    Summary,
+    SummaryStatus,
+    User,
+    UserInterest,
+)
 from app.main import app
+from app.services.feed_editions import MORNING_BRIEF
+from app.services.recommendations import rank_articles_for_user
 from app.tasks.news_fetching import _build_user_feed
 
 engine = create_engine(
@@ -44,6 +56,8 @@ def setup_function():
             [
                 Interest(name="Technology", source_type=SourceType.NEWS),
                 Interest(name="Business", source_type=SourceType.NEWS),
+                Interest(name="Sports", source_type=SourceType.NEWS),
+                Interest(name="India", source_type=SourceType.NEWS),
                 User(
                     email="reader@example.com",
                     hashed_password=get_password_hash("TestPassword123"),
@@ -51,6 +65,96 @@ def setup_function():
             ]
         )
         db.commit()
+    finally:
+        db.close()
+
+
+def _article(
+    *,
+    title: str,
+    country: str,
+    category: str,
+    published_at: datetime,
+) -> Article:
+    return Article(
+        title=title,
+        normalized_title=title.lower(),
+        original_url=f"https://example.com/{title.lower().replace(' ', '-')}",
+        source="Example",
+        country=country,
+        description=title,
+        content=title,
+        raw_text=title,
+        cleaned_text=title,
+        published_at=published_at,
+        primary_category=category,
+        image_url=None,
+        keywords=[category],
+        story_key=f"{country}-{category}-{title}",
+        summary_status=SummaryStatus.COMPLETED,
+    )
+
+
+def test_country_category_intersection_ranks_first():
+    db = TestingSessionLocal()
+    try:
+        user = db.query(User).filter_by(email="reader@example.com").one()
+        interests = {
+            interest.name: interest
+            for interest in db.query(Interest)
+            .filter(Interest.name.in_(["India", "Sports"]))
+            .all()
+        }
+        db.add_all(
+            [
+                UserInterest(user_id=user.id, interest_id=interests["India"].id),
+                UserInterest(user_id=user.id, interest_id=interests["Sports"].id),
+            ]
+        )
+        now = datetime.now(timezone.utc)
+        articles = [
+            _article(
+                title="India cricket final",
+                country="in",
+                category="sports",
+                published_at=now - timedelta(hours=5),
+            ),
+            _article(
+                title="US basketball trade",
+                country="us",
+                category="sports",
+                published_at=now,
+            ),
+            _article(
+                title="India cabinet update",
+                country="in",
+                category="general",
+                published_at=now - timedelta(hours=1),
+            ),
+        ]
+        db.add_all(articles)
+        db.flush()
+        for article in articles:
+            db.add(
+                Summary(
+                    article_id=article.id,
+                    main_takeaway=f"{article.title} summary.",
+                    supporting_lines=[],
+                    summary_text=f"{article.title} summary.",
+                    model_name="test",
+                )
+            )
+        db.commit()
+
+        ranked = rank_articles_for_user(
+            db,
+            user=user,
+            edition_type=MORNING_BRIEF,
+            market_timezone="America/New_York",
+        )
+
+        assert ranked[0].article.title == "India cricket final"
+        assert ranked[0].reason == "market_category"
     finally:
         db.close()
 
@@ -77,7 +181,11 @@ def test_frontend_setup_and_feed_contract():
     interests = interests_response.json()
     assert interests[0]["source_type"] == "news"
 
-    selected_ids = [interest["id"] for interest in interests]
+    selected_ids = [
+        interest["id"]
+        for interest in interests
+        if interest["name"] in {"Technology", "Business"}
+    ]
     update_response = client.post(
         "/api/users/me/interests",
         json=selected_ids,

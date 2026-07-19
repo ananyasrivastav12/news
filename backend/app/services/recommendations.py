@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.config import settings
 from app.db import model as db_model
 from app.services.embeddings import cosine_similarity
-from app.services.feed_editions import DEFAULT_TIMEZONE, MORNING_BRIEF
+from app.services.feed_editions import (
+    DAILY_DIGEST,
+    DEFAULT_TIMEZONE,
+    MIDDAY_CATCH_UP,
+    MORNING_BRIEF,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,7 @@ class RankedArticle:
     score: float
     reason: str
     has_interaction: bool = False
+    lane: str = "exploration"
 
 
 COUNTRY_INTERESTS = {
@@ -29,6 +35,30 @@ COUNTRY_INTERESTS = {
     "united states": "us",
     "us": "us",
     "usa": "us",
+}
+MARKET_COUNTRY_BY_TIMEZONE = {
+    "America/New_York": "us",
+    "Asia/Kolkata": "in",
+}
+EDITION_LANE_RATIOS = {
+    MORNING_BRIEF: {
+        "market_category": 0.60,
+        "market_context": 0.20,
+        "category_global": 0.15,
+        "exploration": 0.05,
+    },
+    MIDDAY_CATCH_UP: {
+        "market_category": 0.50,
+        "market_context": 0.20,
+        "category_global": 0.20,
+        "exploration": 0.10,
+    },
+    DAILY_DIGEST: {
+        "market_category": 0.55,
+        "market_context": 0.25,
+        "category_global": 0.10,
+        "exploration": 0.10,
+    },
 }
 
 
@@ -42,6 +72,52 @@ def get_explicit_country_codes(explicit_interests: set[str]) -> set[str]:
         for interest in explicit_interests
         if (country_code := COUNTRY_INTERESTS.get(interest))
     }
+
+
+def get_explicit_category_names(explicit_interests: set[str]) -> set[str]:
+    country_interest_names = set(COUNTRY_INTERESTS)
+    return {
+        interest
+        for interest in explicit_interests
+        if interest not in country_interest_names
+    }
+
+
+def get_market_country_codes(
+    explicit_country_codes: set[str], market_timezone: str
+) -> set[str]:
+    if explicit_country_codes:
+        return explicit_country_codes
+    default_country = MARKET_COUNTRY_BY_TIMEZONE.get(market_timezone)
+    return {default_country} if default_country else set()
+
+
+def _article_lane(
+    article: db_model.Article,
+    *,
+    selected_country_codes: set[str],
+    selected_categories: set[str],
+    explicit_country_codes: set[str],
+    explicit_interest_terms: set[str],
+) -> str:
+    country_match = article.country in selected_country_codes
+    explicit_country_match = article.country in explicit_country_codes
+    category_match = article.primary_category in selected_categories
+    keyword_match = bool(set(article.keywords or []) & explicit_interest_terms)
+
+    if country_match and category_match:
+        return "market_category"
+    if explicit_country_match or (country_match and not selected_categories):
+        return "market_context"
+    if category_match or keyword_match:
+        return "category_global"
+    return "exploration"
+
+
+def _reason_for_lane(lane: str, *, has_behavioral_signal: bool) -> str:
+    if has_behavioral_signal:
+        return f"{lane}+learned-signal"
+    return lane
 
 
 def _keyword_overlap(left: list[str] | None, right: list[str] | None) -> float:
@@ -148,7 +224,12 @@ def build_today_feed(
         )
         db.flush()
 
-    ranked = rank_articles_for_user(db, user=user)
+    ranked = rank_articles_for_user(
+        db,
+        user=user,
+        edition_type=edition_type,
+        market_timezone=market_timezone,
+    )
     persist_feed(
         db,
         user=user,
@@ -257,12 +338,22 @@ def _log_feed_stats(
     )
 
 
-def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedArticle]:
+def rank_articles_for_user(
+    db: Session,
+    *,
+    user: db_model.User,
+    edition_type: str = MORNING_BRIEF,
+    market_timezone: str = DEFAULT_TIMEZONE,
+) -> list[RankedArticle]:
     explicit_interests = get_explicit_interest_names(user)
     explicit_country_codes = get_explicit_country_codes(explicit_interests)
+    explicit_categories = get_explicit_category_names(explicit_interests)
+    selected_country_codes = get_market_country_codes(
+        explicit_country_codes, market_timezone
+    )
     explicit_interest_terms = {
         token.lower()
-        for interest in explicit_interests
+        for interest in explicit_categories
         for token in interest.replace("-", " ").split()
         if token
     }
@@ -323,7 +414,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
             )
         )
         .order_by(desc(db_model.Article.published_at))
-        .limit(settings.MAX_FEED_ITEMS)
+        .limit(max(settings.MAX_FEED_ITEMS, settings.ARTICLE_POOL_LIMIT))
         .all()
     )
 
@@ -334,8 +425,23 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
             continue
         has_interaction = article.story_key in interacted_story_keys
 
-        explicit_score = 2.5 if article.primary_category in explicit_interests else 0.0
-        country_score = 2.75 if article.country in explicit_country_codes else 0.0
+        lane = _article_lane(
+            article,
+            selected_country_codes=selected_country_codes,
+            selected_categories=explicit_categories,
+            explicit_country_codes=explicit_country_codes,
+            explicit_interest_terms=explicit_interest_terms,
+        )
+        category_match = article.primary_category in explicit_categories
+        country_match = article.country in selected_country_codes
+        explicit_country_match = article.country in explicit_country_codes
+        intersection_match = country_match and category_match
+
+        explicit_score = 3.0 if category_match else 0.0
+        country_score = (
+            3.25 if explicit_country_match else 0.75 if country_match else 0.0
+        )
+        intersection_score = 4.0 if intersection_match else 0.0
         explicit_keyword_score = sum(
             0.35 for keyword in article.keywords if keyword in explicit_interest_terms
         )
@@ -348,7 +454,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
         )
         negative_penalty = min(
             raw_negative_penalty,
-            1.0 if article.primary_category in explicit_interests else 2.0,
+            1.0 if category_match else 2.0,
         )
         if article.published_at:
             recency_hours = (
@@ -361,7 +467,7 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
         )
 
         exploration_bonus = 0.0
-        if explicit_interests and article.primary_category not in explicit_interests:
+        if explicit_interests and lane == "exploration":
             exploration_bonus = 0.15
         elif not explicit_interests:
             exploration_bonus = 0.4
@@ -378,7 +484,8 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
         )
 
         score = (
-            explicit_score
+            intersection_score
+            + explicit_score
             + country_score
             + explicit_keyword_score
             + preference_score
@@ -390,88 +497,94 @@ def rank_articles_for_user(db: Session, *, user: db_model.User) -> list[RankedAr
             - negative_penalty
         )
         if score <= 0 and not (
-            article.primary_category in explicit_interests
-            or article.country in explicit_country_codes
-            or explicit_keyword_score > 0
+            category_match or country_match or explicit_keyword_score > 0
         ):
             continue
 
-        if country_score > 0:
-            reason = "country-match"
-        elif explicit_score > 0:
-            reason = "interest-match"
-        elif explicit_keyword_score > 0:
-            reason = "keyword-match"
-        elif keyword_score > 0:
-            reason = "behavioral-similarity"
-        else:
-            reason = "fresh-exploration"
+        reason = _reason_for_lane(
+            lane,
+            has_behavioral_signal=keyword_score > 0 or embedding_similarity_score > 0,
+        )
         ranked.append(
             RankedArticle(
                 article=article,
                 score=round(score, 4),
                 reason=reason,
                 has_interaction=has_interaction,
+                lane=lane,
             )
         )
 
     ranked.sort(key=lambda item: (item.has_interaction, -item.score))
-    return rerank_with_constraints(ranked, explicit_interests=explicit_interests)
+    return rerank_with_constraints(
+        ranked,
+        explicit_interests=explicit_interests,
+        explicit_categories=explicit_categories,
+        explicit_country_codes=explicit_country_codes,
+        selected_country_codes=selected_country_codes,
+        edition_type=edition_type,
+    )
 
 
 def rerank_with_constraints(
-    ranked_articles: list[RankedArticle], *, explicit_interests: set[str]
+    ranked_articles: list[RankedArticle],
+    *,
+    explicit_interests: set[str],
+    explicit_categories: set[str],
+    explicit_country_codes: set[str],
+    selected_country_codes: set[str],
+    edition_type: str,
 ) -> list[RankedArticle]:
     max_feed_items = settings.MAX_FEED_ITEMS
-    explicit_interest_terms = {
-        token.lower()
-        for interest in explicit_interests
-        for token in interest.replace("-", " ").split()
-        if token
-    }
-    explicit_country_codes = get_explicit_country_codes(explicit_interests)
+    lane_targets = _lane_targets(
+        edition_type=edition_type,
+        total=settings.feed_edition_size,
+        has_countries=bool(explicit_country_codes),
+        has_categories=bool(explicit_categories),
+    )
     remaining = sorted(
         ranked_articles,
         key=lambda item: (
             item.has_interaction,
-            _stage_for_article(
-                item,
-                explicit_interests=explicit_interests,
-                explicit_interest_terms=explicit_interest_terms,
-                explicit_country_codes=explicit_country_codes,
-            ),
+            _lane_sort_order(item.lane),
             -item.score,
         ),
     )
     ordered: list[RankedArticle] = []
     source_counts: dict[str, int] = {}
     category_counts: dict[str, int] = {}
+    country_counts: dict[str, int] = {}
+    lane_counts: dict[str, int] = {}
     exploration_count = 0
     recent_categories: list[str] = []
     selected_keywords: list[list[str]] = []
 
     while remaining and len(ordered) < max_feed_items:
+        eligible_lanes = _eligible_lanes(
+            remaining,
+            lane_targets=lane_targets,
+            lane_counts=lane_counts,
+            ordered_count=len(ordered),
+        )
         best_index = 0
         best_item: RankedArticle | None = None
         best_adjusted_score = float("-inf")
-        prefer_unseen = any(not item.has_interaction for item in remaining)
+        prefer_unseen = any(
+            not item.has_interaction
+            for item in remaining
+            if not eligible_lanes or item.lane in eligible_lanes
+        )
 
         for index, item in enumerate(remaining):
             if prefer_unseen and item.has_interaction:
+                continue
+            if eligible_lanes and item.lane not in eligible_lanes:
                 continue
 
             article = item.article
             category = article.primary_category
             source_name = article.source or "unknown"
-            is_exploration = (
-                bool(explicit_interests) and category not in explicit_interests
-            )
-            stage = _stage_for_article(
-                item,
-                explicit_interests=explicit_interests,
-                explicit_interest_terms=explicit_interest_terms,
-                explicit_country_codes=explicit_country_codes,
-            )
+            is_exploration = item.lane == "exploration"
 
             adjusted_score = item.score
             if item.has_interaction:
@@ -480,25 +593,28 @@ def rerank_with_constraints(
                 )
             adjusted_score -= 0.45 * source_counts.get(source_name, 0)
             adjusted_score -= 0.25 * category_counts.get(category, 0)
+            adjusted_score -= 0.18 * country_counts.get(article.country, 0)
             if recent_categories[-2:] == [category, category]:
                 adjusted_score -= 0.65
-            if stage == 0:
+
+            if item.lane == "market_category":
+                adjusted_score += 0.7
+            elif item.lane == "market_context":
                 adjusted_score += 0.45
-            elif stage == 1:
+            elif item.lane == "category_global":
                 adjusted_score += 0.2
-            elif stage == 2:
-                adjusted_score -= 0.15
             else:
-                adjusted_score -= 0.35
+                adjusted_score -= 0.2
+
             if is_exploration and len(ordered) < settings.feed_edition_size:
                 max_early_exploration = max(
                     1, int(settings.feed_edition_size * settings.FEED_EXPLORATION_RATIO)
                 )
                 if exploration_count >= max_early_exploration:
                     adjusted_score -= 0.9
-            if category in explicit_interests:
+            if category in explicit_categories:
                 adjusted_score += 0.2
-            if article.country in explicit_country_codes:
+            if article.country in selected_country_codes:
                 adjusted_score += 0.35
 
             if selected_keywords:
@@ -510,12 +626,12 @@ def rerank_with_constraints(
 
             if explicit_interests and len(ordered) < settings.feed_edition_size:
                 distinct_interest_categories_used = sum(
-                    1 for key in category_counts if key in explicit_interests
+                    1 for key in category_counts if key in explicit_categories
                 )
                 if (
-                    category in explicit_interests
+                    category in explicit_categories
                     and category_counts.get(category, 0) == 0
-                    and distinct_interest_categories_used < len(explicit_interests)
+                    and distinct_interest_categories_used < len(explicit_categories)
                 ):
                     adjusted_score += 0.3
 
@@ -531,6 +647,7 @@ def rerank_with_constraints(
                 score=round(best_adjusted_score, 4),
                 reason=best_item.reason,
                 has_interaction=best_item.has_interaction,
+                lane=best_item.lane,
             )
         )
         selected_article = best_item.article
@@ -540,13 +657,73 @@ def rerank_with_constraints(
         category_counts[selected_category] = (
             category_counts.get(selected_category, 0) + 1
         )
-        if explicit_interests and selected_category not in explicit_interests:
+        country_counts[selected_article.country] = (
+            country_counts.get(selected_article.country, 0) + 1
+        )
+        lane_counts[best_item.lane] = lane_counts.get(best_item.lane, 0) + 1
+        if is_exploration:
             exploration_count += 1
         recent_categories.append(selected_category)
         selected_keywords.append(selected_article.keywords or [])
         remaining.pop(best_index)
 
     return ordered
+
+
+def _lane_targets(
+    *,
+    edition_type: str,
+    total: int,
+    has_countries: bool,
+    has_categories: bool,
+) -> dict[str, int]:
+    if not has_countries and not has_categories:
+        return {"market_context": total}
+    if has_countries and not has_categories:
+        return {
+            "market_context": round(total * 0.75),
+            "category_global": round(total * 0.10),
+            "exploration": total,
+        }
+    if has_categories and not has_countries:
+        return {
+            "market_category": round(total * 0.55),
+            "category_global": round(total * 0.30),
+            "exploration": total,
+        }
+
+    ratios = EDITION_LANE_RATIOS.get(edition_type, EDITION_LANE_RATIOS[MORNING_BRIEF])
+    targets = {lane: max(1, round(total * ratio)) for lane, ratio in ratios.items()}
+    difference = total - sum(targets.values())
+    targets["market_category"] = max(1, targets.get("market_category", 0) + difference)
+    return targets
+
+
+def _eligible_lanes(
+    remaining: list[RankedArticle],
+    *,
+    lane_targets: dict[str, int],
+    lane_counts: dict[str, int],
+    ordered_count: int,
+) -> set[str]:
+    if ordered_count >= settings.feed_edition_size:
+        return set()
+
+    return {
+        lane
+        for lane, target in lane_targets.items()
+        if lane_counts.get(lane, 0) < target
+        and any(item.lane == lane for item in remaining)
+    }
+
+
+def _lane_sort_order(lane: str) -> int:
+    return {
+        "market_category": 0,
+        "market_context": 1,
+        "category_global": 2,
+        "exploration": 3,
+    }.get(lane, 4)
 
 
 def persist_feed(
