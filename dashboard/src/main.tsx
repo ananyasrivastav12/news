@@ -67,6 +67,38 @@ type Article = {
   is_protected: boolean;
 };
 
+type DistributionCounts = {
+  total_count: number;
+  fresh_count: number;
+  completed_count: number;
+  pending_count: number;
+  failed_count: number;
+  image_count: number;
+};
+
+type CountryDistribution = DistributionCounts & {
+  country: string;
+};
+
+type CategoryDistribution = DistributionCounts & {
+  category: string;
+};
+
+type CountryCategoryDistribution = DistributionCounts & {
+  country: string;
+  category: string;
+};
+
+type ArticleDistribution = {
+  generated_at: string;
+  fresh_cutoff: string;
+  filters: Record<string, unknown>;
+  totals: DistributionCounts;
+  by_country: CountryDistribution[];
+  by_category: CategoryDistribution[];
+  by_country_category: CountryCategoryDistribution[];
+};
+
 type AdminUser = {
   id: number;
   email: string;
@@ -119,13 +151,46 @@ type Schedule = {
   next_run_at: string | null;
 };
 
-type Tab = "overview" | "runs" | "articles" | "users" | "scheduler";
+type Tab = "home" | "control" | "quality" | "users";
+
+const NAV_ITEMS: { id: Tab; label: string; description: string }[] = [
+  {
+    id: "home",
+    label: "Home",
+    description: "Readiness and system health",
+  },
+  {
+    id: "control",
+    label: "Control",
+    description: "Run jobs, users, and schedules",
+  },
+  {
+    id: "quality",
+    label: "Quality",
+    description: "Article pool diagnostics",
+  },
+  {
+    id: "users",
+    label: "Users",
+    description: "Beta users and feed inspection",
+  },
+];
+
+const NEWS_CATEGORIES = [
+  "business",
+  "technology",
+  "health",
+  "sports",
+  "entertainment",
+  "science",
+  "general",
+];
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem("adminToken") ?? "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("home");
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -206,17 +271,18 @@ function App() {
       <aside className="sidebar">
         <div>
           <h1>News Admin</h1>
-          <p>Pipeline operations</p>
+          <p>Feed operations</p>
         </div>
         <nav>
-          {(["overview", "runs", "articles", "users", "scheduler"] as Tab[]).map(
+          {NAV_ITEMS.map(
             (item) => (
               <button
-                key={item}
-                className={tab === item ? "active" : ""}
-                onClick={() => setTab(item)}
+                key={item.id}
+                className={tab === item.id ? "active" : ""}
+                onClick={() => setTab(item.id)}
               >
-                {labelForTab(item)}
+                <strong>{item.label}</strong>
+                <span>{item.description}</span>
               </button>
             ),
           )}
@@ -233,17 +299,16 @@ function App() {
       </aside>
       <main className="workspace">
         {error ? <div className="banner">{error}</div> : null}
-        {tab === "overview" ? <OverviewPage api={api} /> : null}
-        {tab === "runs" ? <RunsPage api={api} /> : null}
-        {tab === "articles" ? <ArticlesPage api={api} /> : null}
+        {tab === "home" ? <HomePage api={api} /> : null}
+        {tab === "control" ? <ControlPage api={api} /> : null}
+        {tab === "quality" ? <QualityPage api={api} /> : null}
         {tab === "users" ? <UsersPage api={api} /> : null}
-        {tab === "scheduler" ? <SchedulerPage api={api} /> : null}
       </main>
     </div>
   );
 }
 
-function OverviewPage({ api }: { api: Api }) {
+function HomePage({ api }: { api: Api }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [isRunningPipeline, setIsRunningPipeline] = useState(false);
@@ -274,19 +339,28 @@ function OverviewPage({ api }: { api: Api }) {
     }
   }
 
-  if (loading) return <PageTitle title="Overview" subtitle="Loading..." />;
+  if (loading) return <PageTitle title="Home" subtitle="Loading..." />;
   if (!overview) return <EmptyState message="Overview could not be loaded." />;
 
   return (
     <section>
-      <PageTitle title="Overview" subtitle="Freshness, capacity, and engagement." />
-      <div className="toolbar">
+      <PageTitle title="Home" subtitle="Readiness, freshness, and system health." />
+      <div className="home-hero">
+        <div>
+          <span className="eyebrow">Current State</span>
+          <h3>{overview.failed_summaries > 0 ? "Needs review" : "System ready"}</h3>
+          <p>
+            {overview.fresh_articles.toLocaleString()} fresh articles,{" "}
+            {overview.completed_summaries.toLocaleString()} completed summaries, and{" "}
+            {overview.total_users.toLocaleString()} beta users.
+          </p>
+        </div>
         <ActionButton
           busy={isRunningPipeline}
           busyLabel="Queueing..."
           onClick={runFullPipeline}
         >
-          Run full pipeline now
+          Run full pipeline
         </ActionButton>
       </div>
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
@@ -318,7 +392,82 @@ function OverviewPage({ api }: { api: Api }) {
   );
 }
 
-function RunsPage({ api }: { api: Api }) {
+function ControlPage({ api }: { api: Api }) {
+  return (
+    <section>
+      <PageTitle title="Control" subtitle="Run jobs, add beta users, and manage schedules." />
+      <div className="control-layout">
+        <PipelineRunsSection api={api} />
+        <div className="control-side">
+          <UserCreatePanel api={api} />
+          <SchedulerPanel api={api} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function UserCreatePanel({ api }: { api: Api }) {
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [createStatus, setCreateStatus] = useState("");
+  const [newUserEmail, setNewUserEmail] = useState("");
+  const [newUserPassword, setNewUserPassword] = useState("");
+
+  async function createUser(event: FormEvent) {
+    event.preventDefault();
+    setIsCreatingUser(true);
+    setCreateStatus("");
+    try {
+      const created = await api.post<AdminUserCreated>("/api/admin/users", {
+        email: newUserEmail.trim(),
+        password: newUserPassword,
+      });
+      setCreateStatus(`Created ${created.email}. They can now log into the app.`);
+      setNewUserEmail("");
+      setNewUserPassword("");
+    } finally {
+      setIsCreatingUser(false);
+    }
+  }
+
+  return (
+    <section className="workspace-card">
+      <SectionHeader
+        title="Beta Access"
+        subtitle="Create a login. Users choose their own interests in the app."
+      />
+      <form className="panel-form stacked-form" onSubmit={createUser}>
+        <label>
+          Beta email
+          <input
+            type="email"
+            value={newUserEmail}
+            onChange={(event) => setNewUserEmail(event.target.value)}
+            placeholder="reader@example.com"
+            required
+          />
+        </label>
+        <label>
+          Password
+          <input
+            type="password"
+            minLength={8}
+            value={newUserPassword}
+            onChange={(event) => setNewUserPassword(event.target.value)}
+            placeholder="At least 8 characters"
+            required
+          />
+        </label>
+        <ActionButton type="submit" busy={isCreatingUser} busyLabel="Creating...">
+          Create beta user
+        </ActionButton>
+      </form>
+      {createStatus ? <InlineState message={createStatus} tone="success" /> : null}
+    </section>
+  );
+}
+
+function PipelineRunsSection({ api }: { api: Api }) {
   const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
@@ -368,8 +517,11 @@ function RunsPage({ api }: { api: Api }) {
   }
 
   return (
-    <section>
-      <PageTitle title="Pipeline Runs" subtitle="Shared article ingestion and summarization history." />
+    <section className="workspace-card">
+      <SectionHeader
+        title="Article Pipeline"
+        subtitle="Refresh the shared article pool. Feeds are still ranked lazily per user."
+      />
       <div className="toolbar">
         <ActionButton
           busy={pendingAction === "Full pipeline"}
@@ -395,12 +547,7 @@ function RunsPage({ api }: { api: Api }) {
       </div>
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
       {loading ? <InlineState message="Loading runs..." /> : null}
-      <div className="legend-grid">
-        <InlineState message="Fetched: raw articles returned by NewsAPI." />
-        <InlineState message="Inserted: new articles after validation and dedupe." />
-        <InlineState message="Summaries: articles summarized in this run." />
-        <InlineState message="Feeds are ranked per user when the mobile app loads." />
-      </div>
+      <RunLegend />
       <table>
         <thead>
           <tr>
@@ -419,19 +566,22 @@ function RunsPage({ api }: { api: Api }) {
         </thead>
         <tbody>
           {runs.map((run) => (
-            <tr key={run.id}>
-              <td>{run.id}</td>
-              <td>{run.run_type}</td>
-              <td><Badge value={run.status} /></td>
-              <td>{run.duration_seconds ? `${run.duration_seconds.toFixed(1)}s` : "-"}</td>
-              <td>{run.fetched_count}</td>
-              <td>{run.inserted_count}</td>
-              <td>{run.summarized_count}</td>
-              <td>{run.summary_failed_count}</td>
-              <td>{run.feed_items_count}</td>
-              <td>{describeRunOptions(run.metadata_json)}</td>
-              <td>{formatDate(run.finished_at)}</td>
-            </tr>
+            <React.Fragment key={run.id}>
+              <tr>
+                <td>{run.id}</td>
+                <td>{run.run_type}</td>
+                <td><Badge value={run.status} /></td>
+                <td>{run.duration_seconds ? `${run.duration_seconds.toFixed(1)}s` : "-"}</td>
+                <td>{run.fetched_count}</td>
+                <td>{run.inserted_count}</td>
+                <td>{run.summarized_count}</td>
+                <td>{run.summary_failed_count}</td>
+                <td>{run.feed_items_count}</td>
+                <td>{describeRunOptions(run.metadata_json)}</td>
+                <td>{formatDate(run.finished_at)}</td>
+              </tr>
+              <RunDetails run={run} />
+            </React.Fragment>
           ))}
         </tbody>
       </table>
@@ -439,9 +589,86 @@ function RunsPage({ api }: { api: Api }) {
   );
 }
 
-function ArticlesPage({ api }: { api: Api }) {
+function RunDetails({ run }: { run: PipelineRun }) {
+  const ingestion = objectValue(run.metadata_json.ingestion);
+  const distribution = articleDistributionValue(run.metadata_json.article_distribution);
+  if (!ingestion && !distribution) {
+    return null;
+  }
+  return (
+    <tr className="run-details-row">
+      <td colSpan={11}>
+        <div className="run-details">
+          {ingestion ? (
+            <div>
+              <h4>Inserted This Run</h4>
+              <RunBreakdown metadata={ingestion} />
+            </div>
+          ) : null}
+          {distribution ? (
+            <div>
+              <h4>Pool After Run</h4>
+              <CompactDistribution distribution={distribution} />
+            </div>
+          ) : null}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function RunBreakdown({ metadata }: { metadata: Record<string, unknown> }) {
+  const byCountry = objectValue(metadata.by_country);
+  const byCategory = objectValue(metadata.by_category);
+  const byCountryCategory = objectValue(metadata.by_country_category);
+  return (
+    <div className="run-breakdown">
+      <div>
+        <strong>Markets</strong>
+        <p>{describeFetchInsertBreakdown(byCountry)}</p>
+      </div>
+      <div>
+        <strong>Categories</strong>
+        <p>{describeFetchInsertBreakdown(byCategory)}</p>
+      </div>
+      <div>
+        <strong>Intersections</strong>
+        <p>{describeNestedFetchInsertBreakdown(byCountryCategory)}</p>
+      </div>
+    </div>
+  );
+}
+
+function CompactDistribution({
+  distribution,
+}: {
+  distribution: ArticleDistribution;
+}) {
+  return (
+    <div className="compact-distribution">
+      {distribution.by_country.map((item) => (
+        <span key={item.country}>
+          {countryLabel(item.country)} {item.completed_count}/{item.total_count} ready
+        </span>
+      ))}
+      {distribution.by_country_category
+        .filter((item) => item.total_count > 0)
+        .slice(0, 10)
+        .map((item) => (
+          <span key={`${item.country}-${item.category}`}>
+            {countryLabel(item.country)} {titleCase(item.category)}{" "}
+            {item.completed_count}/{item.total_count}
+          </span>
+        ))}
+    </div>
+  );
+}
+
+function QualityPage({ api }: { api: Api }) {
   const [articles, setArticles] = useState<Article[]>([]);
+  const [distribution, setDistribution] = useState<ArticleDistribution | null>(null);
   const [country, setCountry] = useState("");
+  const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
@@ -449,13 +676,24 @@ function ArticlesPage({ api }: { api: Api }) {
   async function refresh() {
     const params = new URLSearchParams();
     if (country) params.set("country", country);
+    if (category) params.set("category", category);
     if (status) params.set("summary_status", status);
+    const distributionParams = new URLSearchParams();
+    if (status) distributionParams.set("summary_status", status);
     setLoading(true);
     setIsApplyingFilters(true);
     try {
-      setArticles(await api.get<Article[]>(`/api/admin/articles?${params}`));
+      const [nextArticles, nextDistribution] = await Promise.all([
+        api.get<Article[]>(`/api/admin/articles?${params}`),
+        api.get<ArticleDistribution>(
+          `/api/admin/article-distribution?${distributionParams}`,
+        ),
+      ]);
+      setArticles(nextArticles);
+      setDistribution(nextDistribution);
     } catch {
       setArticles([]);
+      setDistribution(null);
     } finally {
       setLoading(false);
       setIsApplyingFilters(false);
@@ -468,12 +706,20 @@ function ArticlesPage({ api }: { api: Api }) {
 
   return (
     <section>
-      <PageTitle title="Article Pool" subtitle="Stored articles and summary state." />
+      <PageTitle title="Quality" subtitle="Article pool diagnostics and feed input coverage." />
       <div className="toolbar">
         <select value={country} onChange={(event) => setCountry(event.target.value)}>
           <option value="">All countries</option>
           <option value="us">US</option>
           <option value="in">India</option>
+        </select>
+        <select value={category} onChange={(event) => setCategory(event.target.value)}>
+          <option value="">All categories</option>
+          {NEWS_CATEGORIES.map((item) => (
+            <option key={item} value={item}>
+              {titleCase(item)}
+            </option>
+          ))}
         </select>
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="">All summaries</option>
@@ -486,6 +732,7 @@ function ArticlesPage({ api }: { api: Api }) {
         </ActionButton>
       </div>
       {loading ? <InlineState message="Loading articles..." /> : null}
+      {distribution ? <ArticleDistributionPanel distribution={distribution} /> : null}
       <table>
         <thead>
           <tr>
@@ -527,6 +774,128 @@ function ArticlesPage({ api }: { api: Api }) {
   );
 }
 
+function ArticleDistributionPanel({
+  distribution,
+}: {
+  distribution: ArticleDistribution;
+}) {
+  const countries = distribution.by_country.map((item) => item.country).sort();
+  const categories = Array.from(
+    new Set([
+      ...NEWS_CATEGORIES,
+      ...distribution.by_category.map((item) => item.category),
+    ]),
+  );
+
+  return (
+    <div className="quality-panel">
+      <div className="quality-header">
+        <div>
+          <h3>Feed Quality Observability</h3>
+          <p>
+            Pool snapshot by market, category, and market-category intersection.
+          </p>
+        </div>
+        <span>Fresh since {formatDate(distribution.fresh_cutoff)}</span>
+      </div>
+      <div className="quality-summary">
+        <Metric label="Pool articles" value={distribution.totals.total_count} />
+        <Metric label="Fresh" value={distribution.totals.fresh_count} />
+        <Metric label="Completed" value={distribution.totals.completed_count} />
+        <Metric label="Pending" value={distribution.totals.pending_count} />
+        <Metric label="Failed" value={distribution.totals.failed_count} tone="bad" />
+        <Metric label="Images" value={distribution.totals.image_count} />
+      </div>
+      <div className="quality-grid">
+        <DistributionList
+          title="Markets"
+          items={distribution.by_country.map((item) => ({
+            key: item.country,
+            label: countryLabel(item.country),
+            counts: item,
+          }))}
+        />
+        <DistributionList
+          title="Categories"
+          items={distribution.by_category.map((item) => ({
+            key: item.category,
+            label: titleCase(item.category),
+            counts: item,
+          }))}
+        />
+      </div>
+      <div className="matrix-wrap">
+        <table className="matrix-table">
+          <thead>
+            <tr>
+              <th>Market</th>
+              {categories.map((category) => (
+                <th key={category}>{titleCase(category)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {countries.map((country) => (
+              <tr key={country}>
+                <th>{countryLabel(country)}</th>
+                {categories.map((category) => {
+                  const bucket = distribution.by_country_category.find(
+                    (item) => item.country === country && item.category === category,
+                  );
+                  return (
+                    <td
+                      key={`${country}-${category}`}
+                      className={bucket?.completed_count ? "" : "low-count-cell"}
+                    >
+                      {bucket ? (
+                        <>
+                          <strong>{bucket.total_count}</strong>
+                          <span>{bucket.completed_count} ready</span>
+                        </>
+                      ) : (
+                        <span>0 ready</span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function DistributionList({
+  title,
+  items,
+}: {
+  title: string;
+  items: { key: string; label: string; counts: DistributionCounts }[];
+}) {
+  return (
+    <div className="distribution-list">
+      <h4>{title}</h4>
+      {items.length === 0 ? <p>No articles.</p> : null}
+      {items.map((item) => (
+        <div key={item.key} className="distribution-row">
+          <div>
+            <strong>{item.label}</strong>
+            <span>
+              {item.counts.completed_count} ready · {item.counts.pending_count} pending
+            </span>
+          </div>
+          <div className="distribution-counts">
+            <strong>{item.counts.total_count}</strong>
+            <span>{percent(item.counts.completed_count, item.counts.total_count)} ready</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function UsersPage({ api }: { api: Api }) {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<number | null>(null);
@@ -534,12 +903,9 @@ function UsersPage({ api }: { api: Api }) {
   const [loading, setLoading] = useState(true);
   const [selectedFeedLoading, setSelectedFeedLoading] = useState(false);
   const [isRebuildingFeed, setIsRebuildingFeed] = useState(false);
-  const [isCreatingUser, setIsCreatingUser] = useState(false);
-  const [createStatus, setCreateStatus] = useState("");
-  const [newUserEmail, setNewUserEmail] = useState("");
-  const [newUserPassword, setNewUserPassword] = useState("");
   const [rebuildEditionType, setRebuildEditionType] = useState("morning_brief");
   const [rebuildTimezone, setRebuildTimezone] = useState("America/New_York");
+  const feedComposition = useMemo(() => summarizeFeedComposition(feed), [feed]);
 
   async function refreshUsers() {
     setLoading(true);
@@ -582,54 +948,9 @@ function UsersPage({ api }: { api: Api }) {
     }
   }
 
-  async function createUser(event: FormEvent) {
-    event.preventDefault();
-    setIsCreatingUser(true);
-    setCreateStatus("");
-    try {
-      const created = await api.post<AdminUserCreated>("/api/admin/users", {
-        email: newUserEmail.trim(),
-        password: newUserPassword,
-      });
-      setCreateStatus(`Created ${created.email}. They can now log into the app.`);
-      setNewUserEmail("");
-      setNewUserPassword("");
-      await refreshUsers();
-    } finally {
-      setIsCreatingUser(false);
-    }
-  }
-
   return (
     <section>
-      <PageTitle title="Users" subtitle="Beta access and per-user feed inspection." />
-      <form className="panel-form user-create-form" onSubmit={createUser}>
-        <label>
-          Beta email
-          <input
-            type="email"
-            value={newUserEmail}
-            onChange={(event) => setNewUserEmail(event.target.value)}
-            placeholder="reader@example.com"
-            required
-          />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            minLength={8}
-            value={newUserPassword}
-            onChange={(event) => setNewUserPassword(event.target.value)}
-            placeholder="At least 8 characters"
-            required
-          />
-        </label>
-        <ActionButton type="submit" busy={isCreatingUser} busyLabel="Creating...">
-          Create beta user
-        </ActionButton>
-      </form>
-      {createStatus ? <InlineState message={createStatus} tone="success" /> : null}
+      <PageTitle title="Users" subtitle="Beta user list and per-user feed inspection." />
       {loading ? <InlineState message="Loading users..." /> : null}
       <div className="user-workspace">
         <div className="table-panel">
@@ -686,6 +1007,34 @@ function UsersPage({ api }: { api: Api }) {
             </ActionButton>
           </div>
           {selectedFeedLoading ? <InlineState message="Loading selected feed..." /> : null}
+          {feed.length > 0 ? (
+            <div className="feed-composition">
+              <DistributionList
+                title="Feed Markets"
+                items={feedComposition.countries.map((item) => ({
+                  key: item.key,
+                  label: countryLabel(item.key),
+                  counts: compositionCounts(item.count),
+                }))}
+              />
+              <DistributionList
+                title="Feed Categories"
+                items={feedComposition.categories.map((item) => ({
+                  key: item.key,
+                  label: titleCase(item.key),
+                  counts: compositionCounts(item.count),
+                }))}
+              />
+              <DistributionList
+                title="Ranking Reasons"
+                items={feedComposition.reasons.map((item) => ({
+                  key: item.key,
+                  label: titleCase(item.key.replaceAll("_", " ")),
+                  counts: compositionCounts(item.count),
+                }))}
+              />
+            </div>
+          ) : null}
           <table className="feed-table">
             <thead>
               <tr>
@@ -716,7 +1065,7 @@ function UsersPage({ api }: { api: Api }) {
   );
 }
 
-function SchedulerPage({ api }: { api: Api }) {
+function SchedulerPanel({ api }: { api: Api }) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [name, setName] = useState("Morning full pipeline");
   const [hour, setHour] = useState(7);
@@ -761,9 +1110,12 @@ function SchedulerPage({ api }: { api: Api }) {
   }
 
   return (
-    <section>
-      <PageTitle title="Scheduler" subtitle="Backend schedule configuration." />
-      <form className="toolbar" onSubmit={createSchedule}>
+    <section className="workspace-card">
+      <SectionHeader
+        title="Scheduler"
+        subtitle="Backend schedule configuration for recurring jobs."
+      />
+      <form className="toolbar schedule-form" onSubmit={createSchedule}>
         <input value={name} onChange={(event) => setName(event.target.value)} />
         <input
           type="number"
@@ -784,7 +1136,7 @@ function SchedulerPage({ api }: { api: Api }) {
         </ActionButton>
       </form>
       {loading ? <InlineState message="Loading schedules..." /> : null}
-      <table>
+      <table className="compact-table">
         <thead>
           <tr>
             <th>Name</th>
@@ -820,6 +1172,28 @@ function PageTitle({ title, subtitle }: { title: string; subtitle: string }) {
       <h2>{title}</h2>
       <p>{subtitle}</p>
     </header>
+  );
+}
+
+function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <header className="section-header">
+      <div>
+        <h3>{title}</h3>
+        <p>{subtitle}</p>
+      </div>
+    </header>
+  );
+}
+
+function RunLegend() {
+  return (
+    <div className="legend-grid">
+      <InlineState message="Fetched: raw articles returned by NewsAPI." />
+      <InlineState message="Inserted: new articles after validation and dedupe." />
+      <InlineState message="Summaries: articles summarized in this run." />
+      <InlineState message="Feeds are ranked per user when the mobile app loads." />
+    </div>
   );
 }
 
@@ -876,6 +1250,36 @@ function Metric({ label, value, tone }: { label: string; value: number; tone?: "
 
 function Badge({ value }: { value: string }) {
   return <span className={`badge ${value.toLowerCase()}`}>{value.toLowerCase()}</span>;
+}
+
+function summarizeFeedComposition(feed: FeedItem[]) {
+  return {
+    countries: countBy(feed, (item) => item.country),
+    categories: countBy(feed, (item) => item.category),
+    reasons: countBy(feed, (item) => item.ranking_reason ?? "unknown"),
+  };
+}
+
+function countBy<T>(items: T[], keyForItem: (item: T) => string) {
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = keyForItem(item);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return Array.from(counts.entries())
+    .map(([key, count]) => ({ key, count }))
+    .sort((left, right) => right.count - left.count || left.key.localeCompare(right.key));
+}
+
+function compositionCounts(count: number): DistributionCounts {
+  return {
+    total_count: count,
+    fresh_count: 0,
+    completed_count: count,
+    pending_count: 0,
+    failed_count: 0,
+    image_count: 0,
+  };
 }
 
 type Api = ReturnType<typeof createApi>;
@@ -937,16 +1341,6 @@ async function responseMessage(response: Response, fallback: string) {
   }
 }
 
-function labelForTab(tab: Tab) {
-  return {
-    overview: "Overview",
-    runs: "Pipeline Runs",
-    articles: "Article Pool",
-    users: "Users",
-    scheduler: "Scheduler",
-  }[tab];
-}
-
 function editionLabel(value: string) {
   if (value === "morning_brief") return "Morning";
   if (value === "midday_catch_up") return "Midday";
@@ -989,6 +1383,49 @@ function describeCountryBreakdown(byCountry: Record<string, unknown>) {
     .join(" · ");
 }
 
+function describeFetchInsertBreakdown(metadata: Record<string, unknown> | null) {
+  if (!metadata) return "-";
+  const pieces = Object.entries(metadata)
+    .map(([key, value]) => {
+      if (!value || typeof value !== "object") return null;
+      const counts = value as Record<string, unknown>;
+      return `${titleCase(key)} ${counts.fetched ?? 0}/${counts.inserted ?? 0}`;
+    })
+    .filter(Boolean);
+  return pieces.length ? pieces.join(" · ") : "-";
+}
+
+function describeNestedFetchInsertBreakdown(metadata: Record<string, unknown> | null) {
+  if (!metadata) return "-";
+  const pieces = Object.entries(metadata).flatMap(([country, categories]) => {
+    if (!categories || typeof categories !== "object") return [];
+    return Object.entries(categories as Record<string, unknown>)
+      .map(([category, value]) => {
+        if (!value || typeof value !== "object") return null;
+        const counts = value as Record<string, unknown>;
+        const fetched = Number(counts.fetched ?? 0);
+        const inserted = Number(counts.inserted ?? 0);
+        if (fetched === 0 && inserted === 0) return null;
+        return `${countryLabel(country)} ${titleCase(category)} ${fetched}/${inserted}`;
+      })
+      .filter(Boolean);
+  });
+  return pieces.length ? pieces.join(" · ") : "-";
+}
+
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function articleDistributionValue(value: unknown): ArticleDistribution | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ArticleDistribution>;
+  if (!candidate.totals || !candidate.by_country || !candidate.by_country_category) {
+    return null;
+  }
+  return candidate as ArticleDistribution;
+}
+
 function formatDate(value: string | null) {
   if (!value) return "-";
   return new Date(value).toLocaleString();
@@ -996,6 +1433,24 @@ function formatDate(value: string | null) {
 
 function pad(value: number) {
   return String(value).padStart(2, "0");
+}
+
+function titleCase(value: string) {
+  return value
+    .split(" ")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function countryLabel(value: string) {
+  if (value.toLowerCase() === "us") return "US";
+  if (value.toLowerCase() === "in") return "India";
+  return value.toUpperCase();
+}
+
+function percent(value: number, total: number) {
+  if (!total) return "0%";
+  return `${Math.round((value / total) * 100)}%`;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

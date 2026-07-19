@@ -112,6 +112,38 @@ class AdminArticleDetail(AdminArticleOut):
     main_takeaway: str | None = None
 
 
+class ArticleDistributionCounts(BaseModel):
+    total_count: int
+    fresh_count: int
+    completed_count: int
+    pending_count: int
+    failed_count: int
+    image_count: int
+
+
+class ArticleCountryDistribution(ArticleDistributionCounts):
+    country: str
+
+
+class ArticleCategoryDistribution(ArticleDistributionCounts):
+    category: str
+
+
+class ArticleCountryCategoryDistribution(ArticleDistributionCounts):
+    country: str
+    category: str
+
+
+class ArticleDistributionOut(BaseModel):
+    generated_at: datetime
+    fresh_cutoff: datetime
+    filters: dict[str, Any]
+    totals: ArticleDistributionCounts
+    by_country: list[ArticleCountryDistribution]
+    by_category: list[ArticleCategoryDistribution]
+    by_country_category: list[ArticleCountryCategoryDistribution]
+
+
 class AdminUserOut(BaseModel):
     id: int
     email: str

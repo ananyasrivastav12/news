@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.crud import user as crud_user
 from app.db import model as db_model
 from app.schemas import admin as admin_schema
+from app.services.admin_observability import build_article_distribution
 from app.services.admin_pipeline import (
     create_pipeline_run,
     next_daily_run_at,
@@ -200,6 +201,22 @@ def read_admin_articles(
         .all()
     )
     return [_article_row(article) for article in articles]
+
+
+@router.get(
+    "/article-distribution",
+    response_model=admin_schema.ArticleDistributionOut,
+)
+def read_article_distribution(
+    fresh_only: bool = False,
+    summary_status: db_model.SummaryStatus | None = None,
+    db: Session = Depends(get_db),
+):
+    return build_article_distribution(
+        db,
+        fresh_only=fresh_only,
+        summary_status=summary_status,
+    )
 
 
 @router.get("/articles/{article_id}", response_model=admin_schema.AdminArticleDetail)

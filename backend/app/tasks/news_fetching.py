@@ -99,6 +99,13 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
     by_country: dict[str, dict[str, int]] = {
         country: {"fetched": 0, "inserted": 0} for country in countries
     }
+    by_category: dict[str, dict[str, int]] = {
+        category: {"fetched": 0, "inserted": 0} for category in categories
+    }
+    by_country_category: dict[str, dict[str, dict[str, int]]] = {
+        country: {category: {"fetched": 0, "inserted": 0} for category in categories}
+        for country in countries
+    }
     by_strategy: dict[str, int] = {}
 
     for country in countries:
@@ -112,6 +119,8 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
             by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
             fetched += len(articles)
             by_country[country]["fetched"] += len(articles)
+            by_category[category]["fetched"] += len(articles)
+            by_country_category[country][category]["fetched"] += len(articles)
             for raw_article in articles:
                 if country_inserted >= per_country_target:
                     break
@@ -124,6 +133,8 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
                 inserted += 1
                 country_inserted += 1
                 by_country[country]["inserted"] += 1
+                by_category[category]["inserted"] += 1
+                by_country_category[country][category]["inserted"] += 1
             db.commit()
             if country_inserted >= per_country_target:
                 break
@@ -137,6 +148,8 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
         "pruned": pruned,
         "countries": len(countries),
         "by_country": by_country,
+        "by_category": by_category,
+        "by_country_category": by_country_category,
         "by_strategy": by_strategy,
         "requests_planned": len(countries) * len(categories),
     }

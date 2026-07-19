@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.core.config import settings
 from app.db import model as db_model
 from app.db.session import SessionLocal
+from app.services.admin_observability import build_article_distribution
 from app.services.feed_editions import (
     DEFAULT_TIMEZONE,
     EDITION_DEFINITIONS,
@@ -143,6 +144,7 @@ def run_pipeline_now(
                 "reason": "Feeds are ranked lazily per user when the app loads.",
             }
 
+        metadata["article_distribution"] = build_article_distribution(db)
         finished_at = datetime.now(timezone.utc)
         pipeline_run.status = db_model.PipelineRunStatus.SUCCEEDED
         pipeline_run.finished_at = finished_at

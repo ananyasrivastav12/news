@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 os.environ.setdefault("DATABASE_URL", "sqlite://")
 os.environ.setdefault("SECRET_KEY", "test-secret")
 os.environ.setdefault("NEWS_API_KEY", "test-news-key")
+os.environ.setdefault("ADMIN_EMAILS", "reader@example.com")
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -157,6 +158,62 @@ def test_country_category_intersection_ranks_first():
         assert ranked[0].reason == "market_category"
     finally:
         db.close()
+
+
+def test_admin_article_distribution_counts_country_category_intersections():
+    db = TestingSessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        articles = [
+            _article(
+                title="India sports",
+                country="in",
+                category="sports",
+                published_at=now,
+            ),
+            _article(
+                title="India business",
+                country="in",
+                category="business",
+                published_at=now,
+            ),
+            _article(
+                title="US sports",
+                country="us",
+                category="sports",
+                published_at=now,
+            ),
+        ]
+        db.add_all(articles)
+        db.commit()
+    finally:
+        db.close()
+
+    client = TestClient(app)
+    login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "TestPassword123"},
+    )
+    token = login_response.json()["access_token"]
+    response = client.get(
+        "/api/admin/article-distribution",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totals"]["total_count"] == 3
+    assert {item["country"]: item["total_count"] for item in payload["by_country"]} == {
+        "in": 2,
+        "us": 1,
+    }
+    intersections = {
+        (item["country"], item["category"]): item["total_count"]
+        for item in payload["by_country_category"]
+    }
+    assert intersections[("in", "sports")] == 1
+    assert intersections[("in", "business")] == 1
+    assert intersections[("us", "sports")] == 1
 
 
 def test_frontend_setup_and_feed_contract():
