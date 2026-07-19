@@ -153,27 +153,32 @@ type Schedule = {
 
 type Tab = "home" | "control" | "quality" | "users";
 type Tone = "neutral" | "good" | "warn" | "bad";
+type IconName = "home" | "control" | "quality" | "users" | "signout";
 
-const NAV_ITEMS: { id: Tab; label: string; description: string }[] = [
+const NAV_ITEMS: { id: Tab; label: string; description: string; icon: IconName }[] = [
   {
     id: "home",
     label: "Home",
     description: "Readiness and system health",
+    icon: "home",
   },
   {
     id: "control",
     label: "Control",
     description: "Run jobs, users, and schedules",
+    icon: "control",
   },
   {
     id: "quality",
     label: "Quality",
     description: "Article pool diagnostics",
+    icon: "quality",
   },
   {
     id: "users",
     label: "Users",
     description: "Beta users and feed inspection",
+    icon: "users",
   },
 ];
 
@@ -270,9 +275,12 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <div>
-          <h1>News Admin</h1>
-          <p>Feed operations</p>
+        <div className="sidebar-brand">
+          <div className="brand-mark">N</div>
+          <div>
+            <h1>News Admin</h1>
+            <p>Feed operations</p>
+          </div>
         </div>
         <nav>
           {NAV_ITEMS.map(
@@ -282,20 +290,27 @@ function App() {
                 className={tab === item.id ? "active" : ""}
                 onClick={() => setTab(item.id)}
               >
-                <strong>{item.label}</strong>
-                <span>{item.description}</span>
+                <span className="nav-icon">
+                  <IconSymbol name={item.icon} />
+                </span>
+                <span className="nav-copy">
+                  <strong>{item.label}</strong>
+                  <span>{item.description}</span>
+                </span>
               </button>
             ),
           )}
         </nav>
         <button
-          className="secondary"
+          className="sidebar-signout"
           onClick={() => {
             localStorage.removeItem("adminToken");
             setToken("");
           }}
+          aria-label="Sign out"
+          title="Sign out"
         >
-          Sign out
+          <IconSymbol name="signout" />
         </button>
       </aside>
       <main className="workspace">
@@ -311,95 +326,185 @@ function App() {
 
 function HomePage({ api }: { api: Api }) {
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [runs, setRuns] = useState<PipelineRun[]>([]);
+  const [distribution, setDistribution] = useState<ArticleDistribution | null>(null);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isRunningPipeline, setIsRunningPipeline] = useState(false);
-  const [actionStatus, setActionStatus] = useState("");
 
   useEffect(() => {
     setLoading(true);
-    api
-      .get<Overview>("/api/admin/overview")
-      .then(setOverview)
-      .catch(() => setOverview(null))
+    Promise.all([
+      api.get<Overview>("/api/admin/overview"),
+      api.get<PipelineRun[]>("/api/admin/pipeline-runs?limit=5"),
+      api.get<ArticleDistribution>("/api/admin/article-distribution"),
+      api.get<Schedule[]>("/api/admin/schedules"),
+    ])
+      .then(([nextOverview, nextRuns, nextDistribution, nextSchedules]) => {
+        setOverview(nextOverview);
+        setRuns(nextRuns);
+        setDistribution(nextDistribution);
+        setSchedules(nextSchedules);
+      })
+      .catch(() => {
+        setOverview(null);
+        setRuns([]);
+        setDistribution(null);
+        setSchedules([]);
+      })
       .finally(() => setLoading(false));
   }, [api]);
-
-  async function runFullPipeline() {
-    const confirmed = window.confirm(
-      "Run the full pipeline now? This may spend NewsAPI and OpenAI quota."
-    );
-    if (!confirmed) return;
-    setIsRunningPipeline(true);
-    setActionStatus("");
-    try {
-      const queued = await api.post<PipelineRunQueued>("/api/admin/pipeline-runs/full");
-      setActionStatus(`Full pipeline queued as run #${queued.id}. Check Pipeline Runs for progress.`);
-      setOverview(await api.get<Overview>("/api/admin/overview"));
-    } finally {
-      setIsRunningPipeline(false);
-    }
-  }
 
   if (loading) return <PageTitle title="Home" subtitle="Loading..." />;
   if (!overview) return <EmptyState message="Overview could not be loaded." />;
 
+  const latestRun = runs[0] ?? null;
+  const warnings = buildHomeWarnings(overview, latestRun, distribution, schedules);
+  const healthTone = warnings.some((warning) => warning.tone === "bad")
+    ? "bad"
+    : warnings.some((warning) => warning.tone === "warn")
+      ? "warn"
+      : "good";
+  const healthLabel =
+    healthTone === "bad"
+      ? "Needs attention"
+      : healthTone === "warn"
+        ? "Watch closely"
+        : "System ready";
+  const readiness = buildEditionReadiness(schedules);
+
   return (
     <section>
       <PageTitle title="Home" subtitle="Readiness, freshness, and system health." />
-      <div className="home-hero">
+      <div className={`home-hero ${healthTone}`}>
         <div>
           <span className="eyebrow">Current State</span>
-          <h3>{overview.failed_summaries > 0 ? "Needs review" : "System ready"}</h3>
+          <h3>{healthLabel}</h3>
           <p>
             {overview.fresh_articles.toLocaleString()} fresh articles,{" "}
             {overview.completed_summaries.toLocaleString()} completed summaries, and{" "}
             {overview.total_users.toLocaleString()} beta users.
           </p>
         </div>
-        <ActionButton
-          busy={isRunningPipeline}
-          busyLabel="Queueing..."
-          onClick={runFullPipeline}
-        >
-          Run full pipeline
-        </ActionButton>
       </div>
-      {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
-      <div className="metric-grid">
-        <MetricTile label="Total articles" value={overview.total_articles} />
-        <MetricTile label="Fresh articles" value={overview.fresh_articles} />
-        <MetricTile label="Pending summaries" value={overview.pending_summaries} />
-        <MetricTile label="Completed summaries" value={overview.completed_summaries} />
-        <MetricTile label="Failed summaries" value={overview.failed_summaries} tone="bad" />
-        <MetricTile label="Feed items" value={overview.feed_items_generated} />
-        <MetricTile label="Users with feeds" value={overview.users_with_feeds} />
-        <MetricTile label="Target feed size" value={overview.current_feed_size} />
-        <MetricTile label="Article pool limit" value={overview.article_pool_limit} />
-        <MetricTile label="Max feed rows/user" value={overview.max_feed_items} />
-        <MetricTile label="NewsAPI planned" value={overview.newsapi_requests_planned} />
-        <MetricTile label="NewsAPI page size" value={overview.newsapi_page_size} />
-        <MetricTile label="Daily target" value={overview.newsapi_daily_target} />
-        <MetricTile
-          label="Summary calls planned"
-          value={overview.openai_summary_calls_planned}
-        />
-        <MetricTile label="OpenAI summary limit" value={overview.openai_daily_summary_limit} />
-        <MetricTile
-          label="Embedding calls planned"
-          value={overview.openai_embedding_calls_planned}
-        />
-        <MetricTile label="Views" value={overview.viewed_count} />
-        <MetricTile label="Saved" value={overview.saved_count} />
-      </div>
-      <div className="status-strip">
-        <StatusCard
-          label="Last success"
-          value={formatDate(overview.last_successful_run_at)}
-        />
-        <StatusCard
-          label="Next scheduled"
-          value={formatDate(overview.next_scheduled_run_at)}
-        />
+      <div className="home-grid">
+        <div className="home-main">
+          <div className="metric-grid priority-metrics">
+            <MetricTile label="Fresh articles" value={overview.fresh_articles} />
+            <MetricTile label="Ready summaries" value={overview.completed_summaries} />
+            <MetricTile label="Total articles" value={overview.total_articles} />
+            <MetricTile label="Feed items" value={overview.feed_items_generated} />
+            <MetricTile
+              label="Pending summaries"
+              value={overview.pending_summaries}
+              tone={overview.pending_summaries > 0 ? "warn" : "neutral"}
+            />
+            <MetricTile
+              label="Failed summaries"
+              value={overview.failed_summaries}
+              tone={overview.failed_summaries > 0 ? "bad" : "neutral"}
+            />
+            <MetricTile label="Beta users" value={overview.total_users} />
+            <MetricTile label="Views" value={overview.viewed_count} />
+            <MetricTile label="Saved" value={overview.saved_count} />
+          </div>
+          <ChartPanel
+            title="Edition Readiness"
+            subtitle="Schedule coverage for the three daily editions."
+          >
+            <div className="edition-grid">
+              {readiness.map((edition) => (
+                <StatusCard
+                  key={edition.label}
+                  label={edition.label}
+                  value={edition.value}
+                  tone={edition.tone}
+                />
+              ))}
+            </div>
+          </ChartPanel>
+          {distribution ? (
+            <ChartPanel
+              title="Market Health"
+              subtitle="Ready article supply by market."
+              meta={`Fresh since ${formatDate(distribution.fresh_cutoff)}`}
+            >
+              <div className="market-health-grid">
+                {distribution.by_country.map((item) => (
+                  <StatusCard
+                    key={item.country}
+                    label={countryLabel(item.country)}
+                    value={`${item.completed_count.toLocaleString()} ready · ${item.fresh_count.toLocaleString()} fresh`}
+                    tone={item.completed_count > 0 ? "good" : "bad"}
+                  />
+                ))}
+              </div>
+            </ChartPanel>
+          ) : null}
+        </div>
+        <div className="home-side">
+          <ChartPanel
+            title="Attention"
+            subtitle="What to check before opening the app."
+          >
+            <div className="warning-list">
+              {warnings.map((warning) => (
+                <StatusCard
+                  key={warning.label}
+                  label={warning.label}
+                  value={warning.value}
+                  tone={warning.tone}
+                />
+              ))}
+            </div>
+          </ChartPanel>
+          <ChartPanel title="Last Pipeline" subtitle="Most recent backend run.">
+            {latestRun ? (
+              <div className="pipeline-summary">
+                <StatusCard
+                  label={`Run #${latestRun.id}`}
+                  value={latestRun.run_type}
+                  tone={latestRun.status === "succeeded" ? "good" : "bad"}
+                />
+                <StatusCard
+                  label="Status"
+                  value={latestRun.status}
+                  tone={latestRun.status === "succeeded" ? "good" : "bad"}
+                />
+                <StatusCard
+                  label="Inserted"
+                  value={latestRun.inserted_count.toLocaleString()}
+                />
+                <StatusCard
+                  label="Summaries"
+                  value={latestRun.summarized_count.toLocaleString()}
+                />
+                <StatusCard
+                  label="Last success"
+                  value={formatDate(overview.last_successful_run_at)}
+                  tone={overview.last_successful_run_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Next scheduled"
+                  value={formatDate(overview.next_scheduled_run_at)}
+                  tone={overview.next_scheduled_run_at ? "good" : "warn"}
+                />
+              </div>
+            ) : (
+              <div className="pipeline-summary">
+                <StatusCard
+                  label="Last success"
+                  value={formatDate(overview.last_successful_run_at)}
+                  tone={overview.last_successful_run_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Next scheduled"
+                  value={formatDate(overview.next_scheduled_run_at)}
+                  tone={overview.next_scheduled_run_at ? "good" : "warn"}
+                />
+              </div>
+            )}
+          </ChartPanel>
+        </div>
       </div>
     </section>
   );
@@ -1341,6 +1446,66 @@ function ActionPanel({
   );
 }
 
+function IconSymbol({ name }: { name: IconName }) {
+  const paths: Record<IconName, React.ReactNode> = {
+    home: (
+      <>
+        <path d="M3.5 10.6 12 4l8.5 6.6" />
+        <path d="M5.5 9.5V20h13V9.5" />
+        <path d="M9.5 20v-6h5v6" />
+      </>
+    ),
+    control: (
+      <>
+        <path d="M4 7h10" />
+        <path d="M18 7h2" />
+        <path d="M4 17h2" />
+        <path d="M10 17h10" />
+        <circle cx="16" cy="7" r="2" />
+        <circle cx="8" cy="17" r="2" />
+      </>
+    ),
+    quality: (
+      <>
+        <path d="M4 18V9" />
+        <path d="M10 18V5" />
+        <path d="M16 18v-7" />
+        <path d="M22 20H2" />
+      </>
+    ),
+    users: (
+      <>
+        <circle cx="9" cy="8" r="3" />
+        <path d="M3.5 19c.8-3.2 2.7-5 5.5-5s4.7 1.8 5.5 5" />
+        <path d="M15 11.5a3 3 0 1 0 0-5.9" />
+        <path d="M17 14c1.9.5 3.1 2.2 3.5 5" />
+      </>
+    ),
+    signout: (
+      <>
+        <path d="M10 6H6v12h4" />
+        <path d="M13 8l4 4-4 4" />
+        <path d="M17 12H9" />
+      </>
+    ),
+  };
+  return (
+    <svg
+      aria-hidden="true"
+      fill="none"
+      height="18"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      width="18"
+    >
+      {paths[name]}
+    </svg>
+  );
+}
+
 function Badge({ value }: { value: string }) {
   return <span className={`badge ${value.toLowerCase()}`}>{value.toLowerCase()}</span>;
 }
@@ -1372,6 +1537,146 @@ function compositionCounts(count: number): DistributionCounts {
     pending_count: 0,
     failed_count: 0,
     image_count: 0,
+  };
+}
+
+function buildHomeWarnings(
+  overview: Overview,
+  latestRun: PipelineRun | null,
+  distribution: ArticleDistribution | null,
+  schedules: Schedule[],
+) {
+  const warnings: { label: string; value: string; tone: Tone }[] = [];
+  if (latestRun?.status === "failed") {
+    warnings.push({
+      label: "Pipeline failure",
+      value: `Run #${latestRun.id} failed. Check Control for details.`,
+      tone: "bad",
+    });
+  }
+  if (overview.failed_summaries > 0) {
+    warnings.push({
+      label: "Summary failures",
+      value: `${overview.failed_summaries.toLocaleString()} summaries failed.`,
+      tone: "bad",
+    });
+  }
+  if (overview.pending_summaries > 0) {
+    warnings.push({
+      label: "Pending summaries",
+      value: `${overview.pending_summaries.toLocaleString()} articles are waiting for summaries.`,
+      tone: "warn",
+    });
+  }
+  if (overview.fresh_articles < overview.newsapi_daily_target) {
+    warnings.push({
+      label: "Freshness",
+      value: `${overview.fresh_articles.toLocaleString()} fresh articles versus ${overview.newsapi_daily_target.toLocaleString()} target.`,
+      tone: "warn",
+    });
+  }
+  if (!overview.next_scheduled_run_at || schedules.length === 0) {
+    warnings.push({
+      label: "Scheduler",
+      value: "No next scheduled run is visible.",
+      tone: "warn",
+    });
+  }
+  if (distribution) {
+    const missingMarkets = distribution.by_country.filter(
+      (item) => item.completed_count === 0,
+    );
+    for (const item of missingMarkets) {
+      warnings.push({
+        label: `${countryLabel(item.country)} market`,
+        value: "No ready articles in this market.",
+        tone: "bad",
+      });
+    }
+    const missingIntersections = distribution.by_country_category.filter(
+      (item) =>
+        ["sports", "entertainment", "technology", "business"].includes(
+          item.category,
+        ) && item.completed_count === 0,
+    );
+    if (missingIntersections.length > 0) {
+      const first = missingIntersections[0];
+      warnings.push({
+        label: "Coverage gap",
+        value: `${countryLabel(first.country)} ${titleCase(first.category)} has 0 ready articles.`,
+        tone: "warn",
+      });
+    }
+  }
+  if (warnings.length === 0) {
+    warnings.push(
+      {
+        label: "Article supply",
+        value: "Healthy",
+        tone: "good",
+      },
+      {
+        label: "Summaries",
+        value: "Healthy",
+        tone: "good",
+      },
+      {
+        label: "Scheduling",
+        value: "Healthy",
+        tone: "good",
+      },
+    );
+  }
+  return warnings.slice(0, 5);
+}
+
+function buildEditionReadiness(schedules: Schedule[]) {
+  return [
+    editionStatus("Morning Brief", "morning", "7:00 AM", schedules),
+    editionStatus("Midday Catch-Up", "midday", "4:00 PM", schedules),
+    editionStatus("Daily Digest", "digest", "9:00 PM", schedules),
+  ];
+}
+
+function editionStatus(
+  label: string,
+  keyword: string,
+  expectedTime: string,
+  schedules: Schedule[],
+) {
+  const schedule = schedules.find((item) =>
+    item.name.toLowerCase().includes(keyword),
+  );
+  if (!schedule) {
+    return {
+      label,
+      value: (
+        <span className="edition-status-lines">
+          <span>Schedule missing</span>
+          <span>Expected {expectedTime}</span>
+        </span>
+      ),
+      tone: "warn" as Tone,
+    };
+  }
+  return {
+    label,
+    value: schedule.enabled
+      ? (
+        <span className="edition-status-lines">
+          <span>
+            Scheduled {pad(schedule.hour)}:{pad(schedule.minute)}
+          </span>
+          <span>Next {formatDate(schedule.next_run_at)}</span>
+        </span>
+      )
+      : (
+        <span className="edition-status-lines">
+          <span>Paused</span>
+          <span>Expected {expectedTime}</span>
+        </span>
+      ),
+    tone: schedule.enabled ? ("good" as Tone) : ("warn" as Tone),
   };
 }
 
