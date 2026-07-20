@@ -159,25 +159,25 @@ const NAV_ITEMS: { id: Tab; label: string; description: string; icon: IconName }
   {
     id: "home",
     label: "Home",
-    description: "Readiness and system health",
+    description: "System health",
     icon: "home",
   },
   {
     id: "control",
     label: "Control",
-    description: "Run jobs, users, and schedules",
+    description: "Operations",
     icon: "control",
   },
   {
     id: "quality",
     label: "Quality",
-    description: "Article pool diagnostics",
+    description: "Article pool",
     icon: "quality",
   },
   {
     id: "users",
     label: "Users",
-    description: "Beta users and feed inspection",
+    description: "Beta access",
     icon: "users",
   },
 ];
@@ -512,14 +512,15 @@ function HomePage({ api }: { api: Api }) {
 
 function ControlPage({ api }: { api: Api }) {
   return (
-    <section>
-      <PageTitle title="Control" subtitle="Run jobs, add beta users, and manage schedules." />
-      <div className="control-layout">
-        <PipelineRunsSection api={api} />
-        <div className="control-side">
-          <UserCreatePanel api={api} />
-          <SchedulerPanel api={api} />
-        </div>
+    <section className="control-page">
+      <PageTitle title="Control" />
+      <div className="control-console">
+        <PipelineRunsSection api={api}>
+          <div className="control-management-grid">
+            <UserCreatePanel api={api} />
+            <SchedulerPanel api={api} />
+          </div>
+        </PipelineRunsSection>
       </div>
     </section>
   );
@@ -549,10 +550,7 @@ function UserCreatePanel({ api }: { api: Api }) {
   }
 
   return (
-    <ActionPanel
-        title="Beta Access"
-        subtitle="Create a login. Users choose their own interests in the app."
-    >
+    <ActionPanel title="Beta User">
       <form className="panel-form stacked-form" onSubmit={createUser}>
         <label>
           Beta email
@@ -584,11 +582,19 @@ function UserCreatePanel({ api }: { api: Api }) {
   );
 }
 
-function PipelineRunsSection({ api }: { api: Api }) {
+function PipelineRunsSection({
+  api,
+  children,
+}: {
+  api: Api;
+  children: React.ReactNode;
+}) {
   const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [actionStatus, setActionStatus] = useState("");
+  const [expandedRunIds, setExpandedRunIds] = useState<Set<number>>(new Set());
+  const [showAllRuns, setShowAllRuns] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -618,7 +624,7 @@ function PipelineRunsSection({ api }: { api: Api }) {
   async function run(path: string, label: string, body?: unknown) {
     if (
       label === "Full pipeline" &&
-      !window.confirm("Run the full pipeline now? This may spend NewsAPI and OpenAI quota.")
+      !window.confirm("Run the full pipeline now?")
     ) {
       return;
     }
@@ -633,75 +639,162 @@ function PipelineRunsSection({ api }: { api: Api }) {
     }
   }
 
+  function toggleRunDetails(runId: number) {
+    setExpandedRunIds((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) {
+        next.delete(runId);
+      } else {
+        next.add(runId);
+      }
+      return next;
+    });
+  }
+
+  const visibleRuns = showAllRuns ? runs : runs.slice(0, 5);
+
   return (
-    <ActionPanel
-        title="Article Pipeline"
-        subtitle="Refresh the shared article pool. Feeds are still ranked lazily per user."
-    >
-      <div className="toolbar">
-        <ActionButton
-          busy={pendingAction === "Full pipeline"}
-          disabled={pendingAction !== null}
-          onClick={() => run("/api/admin/pipeline-runs/full", "Full pipeline")}
-        >
-          Refresh article pool
-        </ActionButton>
-        <ActionButton
-          busy={pendingAction === "Ingest"}
-          disabled={pendingAction !== null}
-          onClick={() => run("/api/admin/pipeline-runs/ingest", "Ingest")}
-        >
-          Ingest
-        </ActionButton>
-        <ActionButton
-          busy={pendingAction === "Summarize"}
-          disabled={pendingAction !== null}
-          onClick={() => run("/api/admin/pipeline-runs/summarize", "Summarize")}
-        >
-          Summarize
-        </ActionButton>
-      </div>
+    <div className="pipeline-control-stack">
+      <section className="action-panel pipeline-command-center">
+        <SectionHeader title="Pipeline" />
+        <div className="pipeline-actions">
+          <PipelineActionCard
+            title="Full pipeline"
+            description="Fetch + summarize"
+            tone="primary"
+            busy={pendingAction === "Full pipeline"}
+            disabled={pendingAction !== null}
+            buttonLabel="Run"
+            buttonClassName="quiet-action-button"
+            onClick={() => run("/api/admin/pipeline-runs/full", "Full pipeline")}
+          />
+          <PipelineActionCard
+            title="Ingest articles"
+            description="Fetch only"
+            tone="good"
+            busy={pendingAction === "Ingest"}
+            disabled={pendingAction !== null}
+            buttonLabel="Run"
+            buttonClassName="quiet-action-button"
+            onClick={() => run("/api/admin/pipeline-runs/ingest", "Ingest")}
+          />
+          <PipelineActionCard
+            title="Summarize pending"
+            description="Summaries only"
+            tone="warn"
+            busy={pendingAction === "Summarize"}
+            disabled={pendingAction !== null}
+            buttonLabel="Run"
+            buttonClassName="quiet-action-button"
+            onClick={() => run("/api/admin/pipeline-runs/summarize", "Summarize")}
+          />
+        </div>
+      </section>
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
+      {children}
       {loading ? <InlineState message="Loading runs..." /> : null}
-      <RunLegend />
-      <CompactTable minWidth={980}>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>Type</th>
-            <th>Status</th>
-            <th>Duration</th>
-            <th>Fetched</th>
-            <th>Inserted</th>
-            <th>Summaries</th>
-            <th>Failures</th>
-            <th>Feeds</th>
-            <th>Options</th>
-            <th>Finished</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((run) => (
-            <React.Fragment key={run.id}>
+      <ChartPanel title="Recent Runs">
+        <CompactTable className="runs-table" minWidth={860}>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Finished</th>
+              <th>Fetched</th>
+              <th>Inserted</th>
+              <th>Summaries</th>
+              <th>Failures</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!loading && runs.length === 0 ? (
               <tr>
-                <td>{run.id}</td>
-                <td>{run.run_type}</td>
-                <td><Badge value={run.status} /></td>
-                <td>{run.duration_seconds ? `${run.duration_seconds.toFixed(1)}s` : "-"}</td>
-                <td>{run.fetched_count}</td>
-                <td>{run.inserted_count}</td>
-                <td>{run.summarized_count}</td>
-                <td>{run.summary_failed_count}</td>
-                <td>{run.feed_items_count}</td>
-                <td>{describeRunOptions(run.metadata_json)}</td>
-                <td>{formatDate(run.finished_at)}</td>
+                <td colSpan={9} className="empty-table-cell">
+                  No pipeline runs yet.
+                </td>
               </tr>
-              <RunDetails run={run} />
-            </React.Fragment>
-          ))}
-        </tbody>
-      </CompactTable>
-    </ActionPanel>
+            ) : null}
+            {visibleRuns.map((run) => {
+              const hasDetails = Boolean(
+                objectValue(run.metadata_json.ingestion) ||
+                  articleDistributionValue(run.metadata_json.article_distribution),
+              );
+              return (
+                <React.Fragment key={run.id}>
+                  <tr>
+                    <td>{run.id}</td>
+                    <td>{run.run_type}</td>
+                    <td><Badge value={run.status} /></td>
+                    <td>{formatDate(run.finished_at)}</td>
+                    <td>{run.fetched_count}</td>
+                    <td>{run.inserted_count}</td>
+                    <td>{run.summarized_count}</td>
+                    <td>{run.summary_failed_count}</td>
+                    <td>
+                      <button
+                        className="table-action"
+                        disabled={!hasDetails}
+                        onClick={() => toggleRunDetails(run.id)}
+                      >
+                        {expandedRunIds.has(run.id) ? "Hide" : "Details"}
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedRunIds.has(run.id) ? <RunDetails run={run} /> : null}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </CompactTable>
+        {runs.length > 5 ? (
+          <button
+            className="secondary table-footer-action"
+            onClick={() => setShowAllRuns((value) => !value)}
+          >
+            {showAllRuns ? "Show latest 5" : `Show all ${runs.length}`}
+          </button>
+        ) : null}
+      </ChartPanel>
+    </div>
+  );
+}
+
+function PipelineActionCard({
+  title,
+  description,
+  tone,
+  busy,
+  disabled,
+  buttonLabel,
+  buttonClassName,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  tone: "primary" | "good" | "warn";
+  busy: boolean;
+  disabled: boolean;
+  buttonLabel: string;
+  buttonClassName?: string;
+  onClick: () => void;
+}) {
+  return (
+    <div className={`pipeline-action-card ${tone}`}>
+      <div>
+        <h4>{title}</h4>
+        <p>{description}</p>
+      </div>
+      <ActionButton
+        busy={busy}
+        className={buttonClassName}
+        disabled={disabled}
+        onClick={onClick}
+      >
+        {buttonLabel}
+      </ActionButton>
+    </div>
   );
 }
 
@@ -713,16 +806,16 @@ function RunDetails({ run }: { run: PipelineRun }) {
   }
   return (
     <tr className="run-details-row">
-      <td colSpan={11}>
+      <td colSpan={9}>
         <div className="run-details">
           {ingestion ? (
-            <div>
+            <div className="run-detail-block">
               <h4>Inserted This Run</h4>
               <RunBreakdown metadata={ingestion} />
             </div>
           ) : null}
           {distribution ? (
-            <div>
+            <div className="run-detail-block">
               <h4>Pool After Run</h4>
               <CompactDistribution distribution={distribution} />
             </div>
@@ -739,18 +832,31 @@ function RunBreakdown({ metadata }: { metadata: Record<string, unknown> }) {
   const byCountryCategory = objectValue(metadata.by_country_category);
   return (
     <div className="run-breakdown">
-      <div>
+      <div className="run-breakdown-item">
         <strong>Markets</strong>
-        <p>{describeFetchInsertBreakdown(byCountry)}</p>
+        <BreakdownChips value={describeFetchInsertBreakdown(byCountry)} />
       </div>
-      <div>
+      <div className="run-breakdown-item">
         <strong>Categories</strong>
-        <p>{describeFetchInsertBreakdown(byCategory)}</p>
+        <BreakdownChips value={describeFetchInsertBreakdown(byCategory)} />
       </div>
-      <div>
+      <div className="run-breakdown-item wide">
         <strong>Intersections</strong>
-        <p>{describeNestedFetchInsertBreakdown(byCountryCategory)}</p>
+        <BreakdownChips value={describeNestedFetchInsertBreakdown(byCountryCategory)} />
       </div>
+    </div>
+  );
+}
+
+function BreakdownChips({ value }: { value: string }) {
+  if (value === "-") {
+    return <p>-</p>;
+  }
+  return (
+    <div className="breakdown-chips">
+      {value.split(" · ").map((item) => (
+        <span key={item}>{item}</span>
+      ))}
     </div>
   );
 }
@@ -1183,6 +1289,7 @@ function SchedulerPanel({ api }: { api: Api }) {
   const [minute, setMinute] = useState(0);
   const [loading, setLoading] = useState(true);
   const [isAddingSchedule, setIsAddingSchedule] = useState(false);
+  const [isScheduleFormOpen, setIsScheduleFormOpen] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -1215,95 +1322,117 @@ function SchedulerPanel({ api }: { api: Api }) {
         force_feeds: true,
       });
       await refresh();
+      setIsScheduleFormOpen(false);
     } finally {
       setIsAddingSchedule(false);
     }
   }
 
+  const readiness = buildEditionReadiness(schedules);
+
   return (
     <ActionPanel
-        title="Scheduler"
-        subtitle="Backend schedule configuration for recurring jobs."
+      title="Schedules"
+      subtitle=""
     >
-      <form className="toolbar schedule-form" onSubmit={createSchedule}>
-        <input value={name} onChange={(event) => setName(event.target.value)} />
-        <input
-          type="number"
-          min="0"
-          max="23"
-          value={hour}
-          onChange={(event) => setHour(Number(event.target.value))}
-        />
-        <input
-          type="number"
-          min="0"
-          max="59"
-          value={minute}
-          onChange={(event) => setMinute(Number(event.target.value))}
-        />
-        <ActionButton type="submit" busy={isAddingSchedule} busyLabel="Adding...">
-          Add schedule
-        </ActionButton>
-      </form>
-      {loading ? <InlineState message="Loading schedules..." /> : null}
-      <CompactTable className="compact-table" minWidth={620}>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Enabled</th>
-            <th>Type</th>
-            <th>Time</th>
-            <th>Countries</th>
-            <th>Summary limit</th>
-            <th>Next run</th>
-          </tr>
-        </thead>
-        <tbody>
-          {schedules.map((schedule) => (
-            <tr key={schedule.id}>
-              <td>{schedule.name}</td>
-              <td>{schedule.enabled ? "Yes" : "No"}</td>
-              <td>{schedule.schedule_type}</td>
-              <td>{pad(schedule.hour)}:{pad(schedule.minute)}</td>
-              <td>{schedule.countries.join(", ") || "-"}</td>
-              <td>{schedule.summary_limit ?? "-"}</td>
-              <td>{formatDate(schedule.next_run_at)}</td>
-            </tr>
+      <div className="schedule-list">
+        {loading ? <InlineState message="Loading schedules..." /> : null}
+        <div className="schedule-edition-list">
+          {readiness.map((edition) => (
+            <ScheduleStatusRow
+              key={edition.label}
+              label={edition.label}
+              value={edition.value}
+              tone={edition.tone}
+            />
           ))}
-        </tbody>
-      </CompactTable>
+        </div>
+      </div>
+      {!isScheduleFormOpen ? (
+        <button
+          className="secondary inline-add-button"
+          onClick={() => setIsScheduleFormOpen(true)}
+        >
+          Add schedule
+        </button>
+      ) : (
+        <form className="schedule-create-form" onSubmit={createSchedule}>
+          <label>
+            Schedule name
+            <input value={name} onChange={(event) => setName(event.target.value)} />
+          </label>
+          <div className="time-fields">
+            <label>
+              Hour
+              <input
+                type="number"
+                min="0"
+                max="23"
+                value={hour}
+                onChange={(event) => setHour(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              Minute
+              <input
+                type="number"
+                min="0"
+                max="59"
+                value={minute}
+                onChange={(event) => setMinute(Number(event.target.value))}
+              />
+            </label>
+          </div>
+          <ActionButton type="submit" busy={isAddingSchedule} busyLabel="Adding...">
+            Save
+          </ActionButton>
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => setIsScheduleFormOpen(false)}
+          >
+            Cancel
+          </button>
+        </form>
+      )}
     </ActionPanel>
   );
 }
 
-function PageTitle({ title, subtitle }: { title: string; subtitle: string }) {
+function ScheduleStatusRow({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: React.ReactNode;
+  tone: Tone;
+}) {
+  return (
+    <div className={`schedule-status-row ${tone}`}>
+      <strong>{label}</strong>
+      <span>{value}</span>
+    </div>
+  );
+}
+
+function PageTitle({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <header className="page-title">
       <h2>{title}</h2>
-      <p>{subtitle}</p>
+      {subtitle ? <p>{subtitle}</p> : null}
     </header>
   );
 }
 
-function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
     <header className="section-header">
       <div>
         <h3>{title}</h3>
-        <p>{subtitle}</p>
+        {subtitle ? <p>{subtitle}</p> : null}
       </div>
     </header>
-  );
-}
-
-function RunLegend() {
-  return (
-    <div className="legend-grid">
-      <StatusCard label="Fetched" value="Raw articles returned by NewsAPI." />
-      <StatusCard label="Inserted" value="New articles after validation and dedupe." />
-      <StatusCard label="Summaries" value="Articles summarized in this run." />
-      <StatusCard label="Feeds" value="Ranked per user when the mobile app loads." />
-    </div>
   );
 }
 
@@ -1319,6 +1448,7 @@ function ActionButton({
   busy,
   busyLabel = "Working...",
   children,
+  className = "",
   disabled,
   type = "button",
   onClick,
@@ -1326,6 +1456,7 @@ function ActionButton({
   busy?: boolean;
   busyLabel?: string;
   children: React.ReactNode;
+  className?: string;
   disabled?: boolean;
   type?: "button" | "submit";
   onClick?: () => void;
@@ -1333,7 +1464,7 @@ function ActionButton({
   return (
     <button
       type={type}
-      className={busy ? "is-busy" : ""}
+      className={`${className} ${busy ? "is-busy" : ""}`.trim()}
       disabled={busy || disabled}
       onClick={onClick}
     >
@@ -1390,7 +1521,7 @@ function ChartPanel({
   children,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   meta?: string;
   children: React.ReactNode;
 }) {
@@ -1399,7 +1530,7 @@ function ChartPanel({
       <div className="chart-panel-header">
         <div>
           <h3>{title}</h3>
-          <p>{subtitle}</p>
+          {subtitle ? <p>{subtitle}</p> : null}
         </div>
         {meta ? <span>{meta}</span> : null}
       </div>
@@ -1435,7 +1566,7 @@ function ActionPanel({
   children,
 }: {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   children: React.ReactNode;
 }) {
   return (
