@@ -67,6 +67,13 @@ type Article = {
   is_protected: boolean;
 };
 
+type ArticleSearchSummary = {
+  total_count: number;
+  completed_count: number;
+  missing_image_count: number;
+  with_signal_count: number;
+};
+
 type DistributionCounts = {
   total_count: number;
   fresh_count: number;
@@ -151,33 +158,34 @@ type Schedule = {
   next_run_at: string | null;
 };
 
-type Tab = "home" | "control" | "quality" | "users";
+type Tab = "home" | "control" | "quality" | "articles" | "users";
 type Tone = "neutral" | "good" | "warn" | "bad";
-type IconName = "home" | "control" | "quality" | "users" | "signout";
+type IconName = "home" | "control" | "quality" | "articles" | "users" | "signout";
 
-const NAV_ITEMS: { id: Tab; label: string; description: string; icon: IconName }[] = [
+const NAV_ITEMS: { id: Tab; label: string; icon: IconName }[] = [
   {
     id: "home",
     label: "Home",
-    description: "System health",
     icon: "home",
   },
   {
     id: "control",
     label: "Control",
-    description: "Operations",
     icon: "control",
   },
   {
     id: "quality",
     label: "Quality",
-    description: "Article pool",
     icon: "quality",
+  },
+  {
+    id: "articles",
+    label: "Articles",
+    icon: "articles",
   },
   {
     id: "users",
     label: "Users",
-    description: "Beta access",
     icon: "users",
   },
 ];
@@ -279,7 +287,6 @@ function App() {
           <div className="brand-mark">N</div>
           <div>
             <h1>News Admin</h1>
-            <p>Feed operations</p>
           </div>
         </div>
         <nav>
@@ -295,7 +302,6 @@ function App() {
                 </span>
                 <span className="nav-copy">
                   <strong>{item.label}</strong>
-                  <span>{item.description}</span>
                 </span>
               </button>
             ),
@@ -318,6 +324,7 @@ function App() {
         {tab === "home" ? <HomePage api={api} /> : null}
         {tab === "control" ? <ControlPage api={api} /> : null}
         {tab === "quality" ? <QualityPage api={api} /> : null}
+        {tab === "articles" ? <ArticlesPage api={api} /> : null}
         {tab === "users" ? <UsersPage api={api} /> : null}
       </main>
     </div>
@@ -887,34 +894,28 @@ function CompactDistribution({
 }
 
 function QualityPage({ api }: { api: Api }) {
-  const [articles, setArticles] = useState<Article[]>([]);
   const [distribution, setDistribution] = useState<ArticleDistribution | null>(null);
-  const [country, setCountry] = useState("");
-  const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
+  const [dateScope, setDateScope] = useState<"today" | "all" | "custom">("today");
+  const [dateFrom, setDateFrom] = useState(todayDateInput("America/New_York"));
+  const [dateTo, setDateTo] = useState(todayDateInput("America/New_York"));
+  const [marketTimezone, setMarketTimezone] = useState("America/New_York");
   const [loading, setLoading] = useState(true);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
 
   async function refresh() {
-    const params = new URLSearchParams();
-    if (country) params.set("country", country);
-    if (category) params.set("category", category);
-    if (status) params.set("summary_status", status);
     const distributionParams = new URLSearchParams();
     if (status) distributionParams.set("summary_status", status);
+    distributionParams.set("market_timezone", marketTimezone);
+    appendDateScope(distributionParams, dateScope, dateFrom, dateTo, marketTimezone);
     setLoading(true);
     setIsApplyingFilters(true);
     try {
-      const [nextArticles, nextDistribution] = await Promise.all([
-        api.get<Article[]>(`/api/admin/articles?${params}`),
-        api.get<ArticleDistribution>(
-          `/api/admin/article-distribution?${distributionParams}`,
-        ),
-      ]);
-      setArticles(nextArticles);
+      const nextDistribution = await api.get<ArticleDistribution>(
+        `/api/admin/article-distribution?${distributionParams}`,
+      );
       setDistribution(nextDistribution);
     } catch {
-      setArticles([]);
       setDistribution(null);
     } finally {
       setLoading(false);
@@ -927,21 +928,39 @@ function QualityPage({ api }: { api: Api }) {
   }, [api]);
 
   return (
-    <section>
-      <PageTitle title="Quality" subtitle="Article pool diagnostics and feed input coverage." />
-      <div className="toolbar">
-        <select value={country} onChange={(event) => setCountry(event.target.value)}>
-          <option value="">All countries</option>
-          <option value="us">US</option>
-          <option value="in">India</option>
+    <section className="quality-page">
+      <PageTitle title="Quality" />
+      <div className="toolbar quality-filter-bar">
+        <select
+          value={dateScope}
+          onChange={(event) =>
+            setDateScope(event.target.value as "today" | "all" | "custom")
+          }
+        >
+          <option value="today">Today</option>
+          <option value="all">All time</option>
+          <option value="custom">Custom</option>
         </select>
-        <select value={category} onChange={(event) => setCategory(event.target.value)}>
-          <option value="">All categories</option>
-          {NEWS_CATEGORIES.map((item) => (
-            <option key={item} value={item}>
-              {titleCase(item)}
-            </option>
-          ))}
+        {dateScope === "custom" ? (
+          <>
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(event) => setDateFrom(event.target.value)}
+            />
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(event) => setDateTo(event.target.value)}
+            />
+          </>
+        ) : null}
+        <select
+          value={marketTimezone}
+          onChange={(event) => setMarketTimezone(event.target.value)}
+        >
+          <option value="America/New_York">NYC day</option>
+          <option value="Asia/Kolkata">India day</option>
         </select>
         <select value={status} onChange={(event) => setStatus(event.target.value)}>
           <option value="">All summaries</option>
@@ -955,43 +974,254 @@ function QualityPage({ api }: { api: Api }) {
       </div>
       {loading ? <InlineState message="Loading articles..." /> : null}
       {distribution ? <ArticleDistributionPanel distribution={distribution} /> : null}
-      <CompactTable>
-        <thead>
-          <tr>
-            <th>Title</th>
-            <th>Source</th>
-            <th>Country</th>
-            <th>Category</th>
-            <th>Published</th>
-            <th>Summary</th>
-            <th>Image</th>
-            <th>Signals</th>
-            <th>Protected</th>
-          </tr>
-        </thead>
-        <tbody>
-          {!loading && articles.length === 0 ? (
-            <tr>
-              <td colSpan={9} className="empty-table-cell">
-                No articles match these filters.
-              </td>
-            </tr>
+    </section>
+  );
+}
+
+function ArticlesPage({ api }: { api: Api }) {
+  const [articles, setArticles] = useState<Article[]>([]);
+  const [articleSummary, setArticleSummary] = useState<ArticleSearchSummary | null>(null);
+  const [country, setCountry] = useState("");
+  const [category, setCategory] = useState("");
+  const [status, setStatus] = useState("");
+  const [source, setSource] = useState("");
+  const [imageFilter, setImageFilter] = useState("");
+  const [signalsFilter, setSignalsFilter] = useState("");
+  const [protectedFilter, setProtectedFilter] = useState("");
+  const [dateScope, setDateScope] = useState<"today" | "all" | "custom">("today");
+  const [dateFrom, setDateFrom] = useState(todayDateInput("America/New_York"));
+  const [dateTo, setDateTo] = useState(todayDateInput("America/New_York"));
+  const [marketTimezone, setMarketTimezone] = useState("America/New_York");
+  const [limit, setLimit] = useState(100);
+  const [loading, setLoading] = useState(true);
+  const [isApplyingFilters, setIsApplyingFilters] = useState(false);
+
+  async function refresh() {
+    const params = new URLSearchParams();
+    if (country) params.set("country", country);
+    if (category) params.set("category", category);
+    if (status) params.set("summary_status", status);
+    if (source.trim()) params.set("source", source.trim());
+    if (imageFilter) params.set("has_image", imageFilter);
+    if (signalsFilter) params.set("has_signals", signalsFilter);
+    if (protectedFilter) params.set("is_protected", protectedFilter);
+    params.set("market_timezone", marketTimezone);
+    appendDateScope(params, dateScope, dateFrom, dateTo, marketTimezone);
+    const tableParams = new URLSearchParams(params);
+    tableParams.set("limit", String(limit));
+    setLoading(true);
+    setIsApplyingFilters(true);
+    try {
+      const [nextArticles, nextSummary] = await Promise.all([
+        api.get<Article[]>(`/api/admin/articles?${tableParams}`),
+        api.get<ArticleSearchSummary>(`/api/admin/articles/summary?${params}`),
+      ]);
+      setArticles(nextArticles);
+      setArticleSummary(nextSummary);
+    } catch {
+      setArticles([]);
+      setArticleSummary(null);
+    } finally {
+      setLoading(false);
+      setIsApplyingFilters(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, [api]);
+
+  return (
+    <section className="articles-page">
+      <PageTitle title="Articles" />
+      <ChartPanel title="Inventory">
+        <div className="article-filter-grid">
+          <label>
+            Date
+            <select
+              value={dateScope}
+              onChange={(event) =>
+                setDateScope(event.target.value as "today" | "all" | "custom")
+              }
+            >
+              <option value="today">Today</option>
+              <option value="all">All time</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          {dateScope === "custom" ? (
+            <>
+              <label>
+                From
+                <input
+                  type="date"
+                  value={dateFrom}
+                  onChange={(event) => setDateFrom(event.target.value)}
+                />
+              </label>
+              <label>
+                To
+                <input
+                  type="date"
+                  value={dateTo}
+                  onChange={(event) => setDateTo(event.target.value)}
+                />
+              </label>
+            </>
           ) : null}
-          {articles.map((article) => (
-            <tr key={article.id}>
-              <td className="title-cell">{article.title}</td>
-              <td>{article.source ?? "-"}</td>
-              <td>{article.country.toUpperCase()}</td>
-              <td>{article.primary_category}</td>
-              <td>{formatDate(article.published_at)}</td>
-              <td><Badge value={article.summary_status} /></td>
-              <td>{article.image_present ? "Yes" : "No"}</td>
-              <td>{article.interaction_count}</td>
-              <td>{article.is_protected ? "Yes" : "No"}</td>
+          <label>
+            Day zone
+            <select
+              value={marketTimezone}
+              onChange={(event) => setMarketTimezone(event.target.value)}
+            >
+              <option value="America/New_York">NYC</option>
+              <option value="Asia/Kolkata">India</option>
+            </select>
+          </label>
+          <label>
+            Market
+            <select value={country} onChange={(event) => setCountry(event.target.value)}>
+              <option value="">All</option>
+              <option value="us">US</option>
+              <option value="in">India</option>
+            </select>
+          </label>
+          <label>
+            Category
+            <select value={category} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">All</option>
+              {NEWS_CATEGORIES.map((item) => (
+                <option key={item} value={item}>
+                  {titleCase(item)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Summary
+            <select value={status} onChange={(event) => setStatus(event.target.value)}>
+              <option value="">All</option>
+              <option value="pending">Pending</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+          </label>
+          <label>
+            Source
+            <input
+              value={source}
+              onChange={(event) => setSource(event.target.value)}
+              placeholder="Any source"
+            />
+          </label>
+          <label>
+            Image
+            <select
+              value={imageFilter}
+              onChange={(event) => setImageFilter(event.target.value)}
+            >
+              <option value="">All</option>
+              <option value="true">Has image</option>
+              <option value="false">Missing image</option>
+            </select>
+          </label>
+          <label>
+            User signals
+            <select
+              value={signalsFilter}
+              onChange={(event) => setSignalsFilter(event.target.value)}
+            >
+              <option value="">All</option>
+              <option value="true">Has signals</option>
+              <option value="false">No signals</option>
+            </select>
+          </label>
+          <label>
+            Saved
+            <select
+              value={protectedFilter}
+              onChange={(event) => setProtectedFilter(event.target.value)}
+            >
+              <option value="">All</option>
+              <option value="true">Saved</option>
+              <option value="false">Not saved</option>
+            </select>
+          </label>
+          <label>
+            Rows
+            <select
+              value={limit}
+              onChange={(event) => setLimit(Number(event.target.value))}
+            >
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+              <option value={250}>250</option>
+              <option value={500}>500</option>
+            </select>
+          </label>
+          <div className="filter-action-cell">
+            <ActionButton busy={isApplyingFilters} busyLabel="Applying..." onClick={refresh}>
+              Apply
+            </ActionButton>
+          </div>
+        </div>
+        <div className="article-inventory-summary">
+          <MetricTile label="Matching" value={articleSummary?.total_count ?? 0} />
+          <MetricTile label="Shown" value={articles.length} />
+          <MetricTile label="Ready" value={articleSummary?.completed_count ?? 0} />
+          <MetricTile
+            label="Missing images"
+            value={articleSummary?.missing_image_count ?? 0}
+            tone={
+              articleSummary && articleSummary.missing_image_count > 0
+                ? "warn"
+                : "neutral"
+            }
+          />
+          <MetricTile label="With user signals" value={articleSummary?.with_signal_count ?? 0} />
+        </div>
+      </ChartPanel>
+      {loading ? <InlineState message="Loading articles..." /> : null}
+      <ChartPanel title="Article List">
+        <CompactTable className="article-table" minWidth={1040}>
+          <thead>
+            <tr>
+              <th>Title</th>
+              <th>Source</th>
+              <th>Market</th>
+              <th>Category</th>
+              <th>Published</th>
+              <th>Summary</th>
+              <th>Image</th>
+              <th>User signals</th>
+              <th>Protected</th>
             </tr>
-          ))}
-        </tbody>
-      </CompactTable>
+          </thead>
+          <tbody>
+            {!loading && articles.length === 0 ? (
+              <tr>
+                <td colSpan={9} className="empty-table-cell">
+                  No articles match these filters.
+                </td>
+              </tr>
+            ) : null}
+            {articles.map((article) => (
+              <tr key={article.id}>
+                <td className="title-cell">{article.title}</td>
+                <td>{article.source ?? "-"}</td>
+                <td>{countryLabel(article.country)}</td>
+                <td>{titleCase(article.primary_category)}</td>
+                <td>{formatDate(article.published_at)}</td>
+                <td><Badge value={article.summary_status} /></td>
+                <td>{article.image_present ? "Yes" : "No"}</td>
+                <td>{article.interaction_count}</td>
+                <td>{article.is_protected ? "Yes" : "No"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </CompactTable>
+      </ChartPanel>
     </section>
   );
 }
@@ -1008,11 +1238,11 @@ function ArticleDistributionPanel({
       ...distribution.by_category.map((item) => item.category),
     ]),
   );
+  const diagnostics = buildQualityDiagnostics(distribution);
 
   return (
     <ChartPanel
-      title="Feed Quality Observability"
-      subtitle="Pool snapshot by market, category, and market-category intersection."
+      title="Article Pool"
       meta={`Fresh since ${formatDate(distribution.fresh_cutoff)}`}
     >
       <div className="quality-summary">
@@ -1023,8 +1253,18 @@ function ArticleDistributionPanel({
         <MetricTile label="Failed" value={distribution.totals.failed_count} tone="bad" />
         <MetricTile label="Images" value={distribution.totals.image_count} />
       </div>
-      <div className="quality-grid">
-        <DistributionList
+      <div className="quality-diagnostics">
+        {diagnostics.map((item) => (
+          <StatusCard
+            key={item.label}
+            label={item.label}
+            value={item.value}
+            tone={item.tone}
+          />
+        ))}
+      </div>
+      <div className="coverage-grid">
+        <DistributionCompactGrid
           title="Markets"
           items={distribution.by_country.map((item) => ({
             key: item.country,
@@ -1032,7 +1272,7 @@ function ArticleDistributionPanel({
             counts: item,
           }))}
         />
-        <DistributionList
+        <DistributionCompactGrid
           title="Categories"
           items={distribution.by_category.map((item) => ({
             key: item.category,
@@ -1084,6 +1324,31 @@ function ArticleDistributionPanel({
   );
 }
 
+function DistributionCompactGrid({
+  title,
+  items,
+}: {
+  title: string;
+  items: { key: string; label: string; counts: DistributionCounts }[];
+}) {
+  return (
+    <div className="distribution-compact-grid">
+      <h4>{title}</h4>
+      <div>
+        {items.length === 0 ? <p>No articles.</p> : null}
+        {items.map((item) => (
+          <StatusCard
+            key={item.key}
+            label={item.label}
+            value={`${item.counts.completed_count} ready`}
+            tone={item.counts.completed_count > 0 ? "good" : "warn"}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DistributionList({
   title,
   items,
@@ -1122,7 +1387,25 @@ function UsersPage({ api }: { api: Api }) {
   const [isRebuildingFeed, setIsRebuildingFeed] = useState(false);
   const [rebuildEditionType, setRebuildEditionType] = useState("morning_brief");
   const [rebuildTimezone, setRebuildTimezone] = useState("America/New_York");
-  const feedComposition = useMemo(() => summarizeFeedComposition(feed), [feed]);
+  const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
+  const selectedFeed = useMemo(
+    () =>
+      feed
+        .filter(
+          (item) =>
+            item.edition_type === rebuildEditionType &&
+            item.market_timezone === rebuildTimezone,
+        )
+        .sort((left, right) => left.rank_position - right.rank_position),
+    [feed, rebuildEditionType, rebuildTimezone],
+  );
+  const feedComposition = useMemo(
+    () => summarizeFeedComposition(selectedFeed),
+    [selectedFeed],
+  );
+  const feedStats = useMemo(() => summarizeSelectedFeed(selectedFeed), [selectedFeed]);
+  const allFeedStats = useMemo(() => summarizeSelectedFeed(feed), [feed]);
+  const userStats = useMemo(() => summarizeUsers(users), [users]);
 
   async function refreshUsers() {
     setLoading(true);
@@ -1166,17 +1449,22 @@ function UsersPage({ api }: { api: Api }) {
   }
 
   return (
-    <section>
-      <PageTitle title="Users" subtitle="Beta user list and per-user feed inspection." />
+    <section className="users-page">
+      <PageTitle title="Users" />
       {loading ? <InlineState message="Loading users..." /> : null}
       <div className="user-workspace">
-        <div className="table-panel">
+        <div className="user-summary-grid">
+          <MetricTile label="Beta users" value={users.length} />
+          <MetricTile label="With interests" value={userStats.withInterests} />
+          <MetricTile label="Active users" value={userStats.active} />
+          <MetricTile label="Saved articles" value={userStats.saved} />
+        </div>
+        <ChartPanel title="Beta Users">
           <CompactTable className="users-table" minWidth={760}>
             <thead>
               <tr>
                 <th>Email</th>
                 <th>Interests</th>
-                <th>Feed rows</th>
                 <th>Signals</th>
                 <th>Last active</th>
               </tr>
@@ -1190,93 +1478,147 @@ function UsersPage({ api }: { api: Api }) {
                 >
                   <td>{user.email}</td>
                   <td>{user.interests.join(", ") || "Not selected yet"}</td>
-                  <td>{user.feed_count}</td>
                   <td>{user.viewed_count}/{user.liked_count}/{user.saved_count}</td>
                   <td>{formatDate(user.last_active)}</td>
                 </tr>
               ))}
             </tbody>
           </CompactTable>
-        </div>
-        <div className="inspector panel">
-          <div className="toolbar compact">
-            <strong>
-              {selectedUserId
-                ? `Feed Inspector: ${users.find((user) => user.id === selectedUserId)?.email ?? ""}`
-                : "Feed Inspector"}
-            </strong>
-            <select value={rebuildEditionType} onChange={(event) => setRebuildEditionType(event.target.value)}>
-              <option value="morning_brief">Morning</option>
-              <option value="midday_catch_up">Midday</option>
-              <option value="daily_digest">Digest</option>
-            </select>
-            <select value={rebuildTimezone} onChange={(event) => setRebuildTimezone(event.target.value)}>
-              <option value="America/New_York">NYC</option>
-              <option value="Asia/Kolkata">India</option>
-            </select>
-            <ActionButton
-              busy={isRebuildingFeed}
-              busyLabel="Rebuilding..."
-              disabled={!selectedUserId}
-              onClick={rebuild}
-            >
-              Rebuild feed
-            </ActionButton>
-          </div>
-          {selectedFeedLoading ? <InlineState message="Loading selected feed..." /> : null}
-          {feed.length > 0 ? (
-            <div className="feed-composition">
-              <DistributionList
-                title="Feed Markets"
-                items={feedComposition.countries.map((item) => ({
-                  key: item.key,
-                  label: countryLabel(item.key),
-                  counts: compositionCounts(item.count),
-                }))}
-              />
-              <DistributionList
-                title="Feed Categories"
-                items={feedComposition.categories.map((item) => ({
-                  key: item.key,
-                  label: titleCase(item.key),
-                  counts: compositionCounts(item.count),
-                }))}
-              />
-              <DistributionList
-                title="Ranking Reasons"
-                items={feedComposition.reasons.map((item) => ({
-                  key: item.key,
-                  label: titleCase(item.key.replaceAll("_", " ")),
-                  counts: compositionCounts(item.count),
-                }))}
-              />
+        </ChartPanel>
+        <ChartPanel title="Feed Inspector">
+          <div className="inspector">
+            <div className="inspector-toolbar">
+              <strong>{selectedUser?.email ?? "Select a user"}</strong>
+              <div className="inspector-controls">
+                <select
+                  value={rebuildEditionType}
+                  onChange={(event) => setRebuildEditionType(event.target.value)}
+                >
+                  <option value="morning_brief">Morning</option>
+                  <option value="midday_catch_up">Midday</option>
+                  <option value="daily_digest">Digest</option>
+                </select>
+                <select
+                  value={rebuildTimezone}
+                  onChange={(event) => setRebuildTimezone(event.target.value)}
+                >
+                  <option value="America/New_York">NYC</option>
+                  <option value="Asia/Kolkata">India</option>
+                </select>
+                <ActionButton
+                  busy={isRebuildingFeed}
+                  busyLabel="Rebuilding..."
+                  disabled={!selectedUserId}
+                  onClick={rebuild}
+                >
+                  Rebuild feed
+                </ActionButton>
+              </div>
             </div>
-          ) : null}
-          <CompactTable className="feed-table" minWidth={980}>
-            <thead>
-              <tr>
-                <th>Edition</th>
-                <th>Rank</th>
-                <th>Title</th>
-                <th>Reason</th>
-                <th>Score</th>
-                <th>State</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feed.map((item) => (
-                <tr key={`${item.feed_date}-${item.edition_type}-${item.rank_position}-${item.article_id}`}>
-                  <td>{editionLabel(item.edition_type)} · {item.market_timezone}</td>
-                  <td>{item.rank_position}</td>
-                  <td className="title-cell">{item.title}</td>
-                  <td>{item.ranking_reason ?? "-"}</td>
-                  <td>{item.score.toFixed(2)}</td>
-                  <td>{item.is_viewed ? "viewed" : "unviewed"}</td>
+            {selectedFeedLoading ? (
+              <InlineState message="Loading selected feed..." />
+            ) : null}
+            {selectedUser ? (
+              <>
+                <div className="inspector-context">
+                  <div>
+                    <span>Showing</span>
+                    <strong>
+                      {editionLabel(rebuildEditionType)} /{" "}
+                      {timezoneLabel(rebuildTimezone)} only
+                    </strong>
+                  </div>
+                  <div>
+                    <span>Loaded for user</span>
+                    <strong>{feed.length} cards across available editions</strong>
+                  </div>
+                  <div>
+                    <span>Order</span>
+                    <strong>Stored rank; gaps can appear after rebuilds</strong>
+                  </div>
+                </div>
+                <div className="feed-inspector-summary">
+                  <MetricTile label="Selected cards" value={selectedFeed.length} />
+                  <MetricTile label="All loaded" value={feed.length} />
+                  <MetricTile label="Unviewed" value={feedStats.unviewed} />
+                  <MetricTile label="Viewed" value={feedStats.viewed} />
+                  <MetricTile label="Saved" value={feedStats.saved} />
+                  <MetricTile label="All saved" value={allFeedStats.saved} />
+                </div>
+              </>
+            ) : null}
+            {selectedFeed.length > 0 ? (
+              <div className="feed-composition">
+                <DistributionCompactGrid
+                  title="Markets"
+                  items={feedComposition.countries.map((item) => ({
+                    key: item.key,
+                    label: countryLabel(item.key),
+                    counts: compositionCounts(item.count),
+                  }))}
+                />
+                <DistributionCompactGrid
+                  title="Categories"
+                  items={feedComposition.categories.map((item) => ({
+                    key: item.key,
+                    label: titleCase(item.key),
+                    counts: compositionCounts(item.count),
+                  }))}
+                />
+                <DistributionCompactGrid
+                  title="Reasons"
+                  items={feedComposition.reasons.map((item) => ({
+                    key: item.key,
+                    label: rankingReasonLabel(item.key),
+                    counts: compositionCounts(item.count),
+                  }))}
+                />
+              </div>
+            ) : null}
+            <CompactTable className="feed-table" minWidth={1040}>
+              <thead>
+                <tr>
+                  <th>Stored rank</th>
+                  <th>Market</th>
+                  <th>Category</th>
+                  <th>Title</th>
+                  <th>Reason</th>
+                  <th>Score</th>
+                  <th>State</th>
                 </tr>
-              ))}
-            </tbody>
-          </CompactTable>
-        </div>
+              </thead>
+              <tbody>
+                {selectedUser && !selectedFeedLoading && selectedFeed.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="empty-table-cell">
+                      No cards for this edition and timezone.
+                    </td>
+                  </tr>
+                ) : null}
+                {!selectedUser ? (
+                  <tr>
+                    <td colSpan={7} className="empty-table-cell">
+                      Select a beta user to inspect their feed.
+                    </td>
+                  </tr>
+                ) : null}
+                {selectedFeed.map((item) => (
+                  <tr
+                    key={`${item.feed_date}-${item.edition_type}-${item.rank_position}-${item.article_id}`}
+                  >
+                    <td>{item.rank_position}</td>
+                    <td>{countryLabel(item.country)}</td>
+                    <td>{titleCase(item.category)}</td>
+                    <td className="title-cell">{item.title}</td>
+                    <td>{rankingReasonLabel(item.ranking_reason)}</td>
+                    <td>{item.score.toFixed(2)}</td>
+                    <td>{feedStateLabel(item)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </CompactTable>
+          </div>
+        </ChartPanel>
       </div>
     </section>
   );
@@ -1604,6 +1946,14 @@ function IconSymbol({ name }: { name: IconName }) {
         <path d="M22 20H2" />
       </>
     ),
+    articles: (
+      <>
+        <path d="M6 4h12v16H6z" />
+        <path d="M9 8h6" />
+        <path d="M9 12h6" />
+        <path d="M9 16h4" />
+      </>
+    ),
     users: (
       <>
         <circle cx="9" cy="8" r="3" />
@@ -1647,6 +1997,159 @@ function summarizeFeedComposition(feed: FeedItem[]) {
     categories: countBy(feed, (item) => item.category),
     reasons: countBy(feed, (item) => item.ranking_reason ?? "unknown"),
   };
+}
+
+function summarizeSelectedFeed(feed: FeedItem[]) {
+  return {
+    viewed: feed.filter((item) => item.is_viewed).length,
+    unviewed: feed.filter((item) => !item.is_viewed).length,
+    saved: feed.filter((item) => item.saved).length,
+  };
+}
+
+function summarizeUsers(users: AdminUser[]) {
+  return {
+    withInterests: users.filter((user) => user.interests.length > 0).length,
+    active: users.filter((user) => Boolean(user.last_active)).length,
+    saved: users.reduce((total, user) => total + user.saved_count, 0),
+  };
+}
+
+function buildQualityDiagnostics(distribution: ArticleDistribution) {
+  const total = distribution.totals.total_count;
+  const completed = distribution.totals.completed_count;
+  const imageCount = distribution.totals.image_count;
+  const diagnostics: { label: string; value: React.ReactNode; tone: Tone }[] = [
+    {
+      label: "Ready summaries",
+      value: `${completed.toLocaleString()} of ${total.toLocaleString()} ready`,
+      tone: completed === total ? "good" : completed > 0 ? "warn" : "bad",
+    },
+    {
+      label: "Image coverage",
+      value: `${percent(imageCount, total)} with images`,
+      tone: total > 0 && imageCount / total < 0.8 ? "warn" : "good",
+    },
+  ];
+
+  const zeroBuckets = importantCoverageBuckets(distribution).filter(
+    (item) => item.completed_count === 0,
+  );
+  diagnostics.push({
+    label: "Coverage gaps",
+    value:
+      zeroBuckets.length === 0
+        ? "No priority gaps"
+        : (
+          <LineList
+            items={zeroBuckets
+              .slice(0, 3)
+              .map(
+                (item) => `${countryLabel(item.country)} ${titleCase(item.category)}`,
+              )}
+          />
+        ),
+    tone: zeroBuckets.length === 0 ? "good" : "warn",
+  });
+
+  const thinBuckets = importantCoverageBuckets(distribution).filter(
+    (item) => item.completed_count > 0 && item.completed_count < 20,
+  );
+  diagnostics.push({
+    label: "Thin coverage",
+    value:
+      thinBuckets.length === 0
+        ? "Priority buckets have depth"
+        : (
+          <LineList
+            items={thinBuckets
+              .slice(0, 3)
+              .map(
+                (item) =>
+                  `${countryLabel(item.country)} ${titleCase(item.category)} (${item.completed_count})`,
+              )}
+          />
+        ),
+    tone: thinBuckets.length === 0 ? "good" : "warn",
+  });
+
+  return diagnostics;
+}
+
+function LineList({ items }: { items: string[] }) {
+  return (
+    <span className="line-list">
+      {items.map((item) => (
+        <span key={item}>{item}</span>
+      ))}
+    </span>
+  );
+}
+
+function importantCoverageBuckets(distribution: ArticleDistribution) {
+  const countries = distribution.by_country.map((item) => item.country);
+  const categories = NEWS_CATEGORIES.filter((category) => category !== "general");
+  return countries.flatMap((country) =>
+    categories.map((category) => {
+      const bucket = distribution.by_country_category.find(
+        (item) => item.country === country && item.category === category,
+      );
+      return (
+        bucket ?? {
+          country,
+          category,
+          total_count: 0,
+          fresh_count: 0,
+          completed_count: 0,
+          pending_count: 0,
+          failed_count: 0,
+          image_count: 0,
+        }
+      );
+    }),
+  );
+}
+
+function rankingReasonLabel(value: string | null) {
+  if (!value) return "-";
+  return titleCase(value.replaceAll("_", " ").replaceAll("-", " "));
+}
+
+function feedStateLabel(item: FeedItem) {
+  const states = [item.is_viewed ? "viewed" : "unviewed"];
+  if (item.liked) states.push("liked");
+  if (item.disliked) states.push("disliked");
+  if (item.saved) states.push("saved");
+  return states.join(" · ");
+}
+
+function appendDateScope(
+  params: URLSearchParams,
+  scope: "today" | "all" | "custom",
+  dateFrom: string,
+  dateTo: string,
+  marketTimezone: string,
+) {
+  if (scope === "all") return;
+  if (scope === "today") {
+    const today = todayDateInput(marketTimezone);
+    params.set("date_from", today);
+    params.set("date_to", today);
+    return;
+  }
+  if (dateFrom) params.set("date_from", dateFrom);
+  if (dateTo) params.set("date_to", dateTo);
+}
+
+function todayDateInput(timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(new Date());
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function countBy<T>(items: T[], keyForItem: (item: T) => string) {
@@ -1875,6 +2378,12 @@ function editionLabel(value: string) {
   if (value === "midday_catch_up") return "Midday";
   if (value === "daily_digest") return "Digest";
   if (value === "all") return "All editions";
+  return value;
+}
+
+function timezoneLabel(value: string) {
+  if (value === "America/New_York") return "NYC";
+  if (value === "Asia/Kolkata") return "India";
   return value;
 }
 

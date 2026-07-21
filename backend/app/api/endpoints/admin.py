@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.api.dependencies import get_current_admin_user, get_db
@@ -177,21 +178,28 @@ def read_admin_articles(
     category: str | None = None,
     source: str | None = None,
     summary_status: db_model.SummaryStatus | None = None,
+    has_image: bool | None = None,
+    has_signals: bool | None = None,
+    is_protected: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    market_timezone: str = DEFAULT_TIMEZONE,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
-    query = db.query(db_model.Article).options(
-        selectinload(db_model.Article.interactions)
-    )
-    if country:
-        query = query.filter(db_model.Article.country == country.lower())
-    if category:
-        query = query.filter(db_model.Article.primary_category == category.lower())
-    if source:
-        query = query.filter(db_model.Article.source.ilike(f"%{source}%"))
-    if summary_status:
-        query = query.filter(db_model.Article.summary_status == summary_status)
-
+    query = _filtered_article_query(
+        db,
+        country=country,
+        category=category,
+        source=source,
+        summary_status=summary_status,
+        has_image=has_image,
+        has_signals=has_signals,
+        is_protected=is_protected,
+        date_from=date_from,
+        date_to=date_to,
+        market_timezone=market_timezone,
+    ).options(selectinload(db_model.Article.interactions))
     articles = (
         query.order_by(
             desc(db_model.Article.published_at).nullslast(),
@@ -204,18 +212,72 @@ def read_admin_articles(
 
 
 @router.get(
+    "/articles/summary",
+    response_model=admin_schema.AdminArticleSearchSummary,
+)
+def read_admin_article_search_summary(
+    country: str | None = None,
+    category: str | None = None,
+    source: str | None = None,
+    summary_status: db_model.SummaryStatus | None = None,
+    has_image: bool | None = None,
+    has_signals: bool | None = None,
+    is_protected: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    market_timezone: str = DEFAULT_TIMEZONE,
+    db: Session = Depends(get_db),
+):
+    query = _filtered_article_query(
+        db,
+        country=country,
+        category=category,
+        source=source,
+        summary_status=summary_status,
+        has_image=has_image,
+        has_signals=has_signals,
+        is_protected=is_protected,
+        date_from=date_from,
+        date_to=date_to,
+        market_timezone=market_timezone,
+    )
+    missing_image_filter = or_(
+        db_model.Article.image_url.is_(None),
+        db_model.Article.image_url == "",
+    )
+    return {
+        "total_count": query.count(),
+        "completed_count": query.filter(
+            db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED
+        ).count(),
+        "missing_image_count": query.filter(missing_image_filter).count(),
+        "with_signal_count": query.filter(db_model.Article.interactions.any()).count(),
+    }
+
+
+@router.get(
     "/article-distribution",
     response_model=admin_schema.ArticleDistributionOut,
 )
 def read_article_distribution(
     fresh_only: bool = False,
     summary_status: db_model.SummaryStatus | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    market_timezone: str = DEFAULT_TIMEZONE,
     db: Session = Depends(get_db),
 ):
+    published_from, published_to = _published_date_range(
+        date_from=date_from,
+        date_to=date_to,
+        market_timezone=market_timezone,
+    )
     return build_article_distribution(
         db,
         fresh_only=fresh_only,
         summary_status=summary_status,
+        published_from=published_from,
+        published_to=published_to,
     )
 
 
@@ -568,6 +630,85 @@ def _interaction_count(db: Session, interaction_type: db_model.InteractionType) 
         db.query(db_model.UserArticleInteraction)
         .filter(db_model.UserArticleInteraction.interaction_type == interaction_type)
         .count()
+    )
+
+
+def _filtered_article_query(
+    db: Session,
+    *,
+    country: str | None,
+    category: str | None,
+    source: str | None,
+    summary_status: db_model.SummaryStatus | None,
+    has_image: bool | None,
+    has_signals: bool | None,
+    is_protected: bool | None,
+    date_from: date | None,
+    date_to: date | None,
+    market_timezone: str,
+):
+    published_from, published_to = _published_date_range(
+        date_from=date_from,
+        date_to=date_to,
+        market_timezone=market_timezone,
+    )
+    query = db.query(db_model.Article)
+    if country:
+        query = query.filter(db_model.Article.country == country.lower())
+    if category:
+        query = query.filter(db_model.Article.primary_category == category.lower())
+    if source:
+        query = query.filter(db_model.Article.source.ilike(f"%{source}%"))
+    if summary_status:
+        query = query.filter(db_model.Article.summary_status == summary_status)
+    if has_image is not None:
+        missing_image_filter = or_(
+            db_model.Article.image_url.is_(None),
+            db_model.Article.image_url == "",
+        )
+        query = query.filter(
+            ~missing_image_filter if has_image else missing_image_filter
+        )
+    if has_signals is not None:
+        signal_filter = db_model.Article.interactions.any()
+        query = query.filter(signal_filter if has_signals else ~signal_filter)
+    if is_protected is not None:
+        protected_filter = db_model.Article.interactions.any(
+            db_model.UserArticleInteraction.interaction_type
+            == db_model.InteractionType.SAVE
+        )
+        query = query.filter(protected_filter if is_protected else ~protected_filter)
+    if published_from is not None:
+        query = query.filter(db_model.Article.published_at >= published_from)
+    if published_to is not None:
+        query = query.filter(db_model.Article.published_at < published_to)
+    return query
+
+
+def _published_date_range(
+    *,
+    date_from: date | None,
+    date_to: date | None,
+    market_timezone: str,
+) -> tuple[datetime | None, datetime | None]:
+    if date_from is None and date_to is None:
+        return None, None
+    timezone_name = normalize_timezone(market_timezone)
+    local_timezone = ZoneInfo(timezone_name)
+    start = (
+        datetime.combine(date_from, time.min, tzinfo=local_timezone)
+        if date_from is not None
+        else None
+    )
+    end_date = date_to if date_to is not None else date_from
+    end = (
+        datetime.combine(end_date + timedelta(days=1), time.min, tzinfo=local_timezone)
+        if end_date is not None
+        else None
+    )
+    return (
+        start.astimezone(timezone.utc) if start is not None else None,
+        end.astimezone(timezone.utc) if end is not None else None,
     )
 
 

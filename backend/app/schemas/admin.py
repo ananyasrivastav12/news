@@ -104,6 +104,13 @@ class AdminArticleOut(BaseModel):
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
 
 
+class AdminArticleSearchSummary(BaseModel):
+    total_count: int
+    completed_count: int
+    missing_image_count: int
+    with_signal_count: int
+
+
 class AdminArticleDetail(AdminArticleOut):
     original_url: str
     description: str | None = None
