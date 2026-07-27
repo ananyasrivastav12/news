@@ -137,9 +137,11 @@ class Summary(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     article_id = Column(Integer, ForeignKey("articles.id"), unique=True, nullable=False)
+    display_headline = Column(Text, nullable=True)
     main_takeaway = Column(Text, nullable=False)
     supporting_lines = Column(JSON, nullable=False, default=list)
     summary_text = Column(Text, nullable=False)
+    why_it_matters = Column(Text, nullable=True)
     model_name = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

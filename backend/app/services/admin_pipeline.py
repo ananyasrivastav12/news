@@ -13,6 +13,7 @@ from app.services.admin_observability import build_article_distribution
 from app.services.feed_editions import (
     DEFAULT_TIMEZONE,
     EDITION_DEFINITIONS,
+    get_timezone,
     local_feed_date,
     normalize_timezone,
     validate_edition_type,
@@ -25,12 +26,15 @@ from app.tasks.news_fetching import (
 )
 
 
-def next_daily_run_at(hour: int, minute: int) -> datetime:
-    now = datetime.now(timezone.utc)
+def next_daily_run_at(
+    hour: int, minute: int, timezone_name: str = DEFAULT_TIMEZONE
+) -> datetime:
+    local_timezone = get_timezone(timezone_name)
+    now = datetime.now(local_timezone)
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= now:
         candidate += timedelta(days=1)
-    return candidate
+    return candidate.astimezone(timezone.utc)
 
 
 def create_pipeline_run(
@@ -276,6 +280,7 @@ def _apply_summarization_counts(
 ) -> None:
     pipeline_run.summarized_count += int(result.get("processed", 0))
     pipeline_run.summary_failed_count += int(result.get("failed", 0))
+    pipeline_run.embedded_count += int(result.get("embedded", 0))
 
 
 def _apply_feed_counts(

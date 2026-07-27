@@ -83,7 +83,7 @@ export function StoryCard({
             accessibilityLabel={`Open ${story.displayHeadline}`}
             style={styles.headlineWrap}
           >
-            <ArticleHeadline numberOfLines={4}>{story.displayHeadline}</ArticleHeadline>
+            <ArticleHeadline numberOfLines={3}>{story.displayHeadline}</ArticleHeadline>
           </Pressable>
           <View style={styles.metaActionRow}>
             <View style={styles.metaLine}>
@@ -114,7 +114,7 @@ export function StoryCard({
           </View>
           <View style={styles.divider} />
           <View style={styles.summaryWrap}>
-            <Summary numberOfLines={8}>{story.shortSummary}</Summary>
+            <Summary numberOfLines={7}>{story.shortSummary}</Summary>
           </View>
         </View>
       </View>

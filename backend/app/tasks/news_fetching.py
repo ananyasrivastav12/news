@@ -221,6 +221,7 @@ async def _async_summarize_articles(
 
     processed = 0
     failed = 0
+    embedded = 0
     for article in pending_articles:
         try:
             summary_payload = await summarizer.summarize(
@@ -237,9 +238,11 @@ async def _async_summarize_articles(
                 summary = db_model.Summary(article_id=article.id, **summary_payload)
                 db.add(summary)
             else:
+                summary.display_headline = summary_payload["display_headline"]
                 summary.main_takeaway = summary_payload["main_takeaway"]
                 summary.supporting_lines = summary_payload["supporting_lines"]
                 summary.summary_text = summary_payload["summary_text"]
+                summary.why_it_matters = summary_payload["why_it_matters"]
                 summary.model_name = summary_payload["model_name"]
             article.summary_status = db_model.SummaryStatus.COMPLETED
             article.processed_at = datetime.now(timezone.utc)
@@ -247,6 +250,7 @@ async def _async_summarize_articles(
                 article.embedding = await embedding_service.embed_text(
                     summary.summary_text
                 )
+                embedded += 1
             except Exception:
                 article.embedding = article.embedding
             processed += 1
@@ -255,7 +259,7 @@ async def _async_summarize_articles(
             failed += 1
         db.commit()
 
-    return {"processed": processed, "failed": failed}
+    return {"processed": processed, "failed": failed, "embedded": embedded}
 
 
 def _select_articles_for_summarization(
@@ -377,6 +381,7 @@ def _finish_recorded_run(
     if summarization is not None:
         pipeline_run.summarized_count += int(summarization.get("processed", 0))
         pipeline_run.summary_failed_count += int(summarization.get("failed", 0))
+        pipeline_run.embedded_count += int(summarization.get("embedded", 0))
         metadata["summarization"] = summarization
     if feeds is not None:
         pipeline_run.feed_items_count += int(feeds.get("feed_items", 0))

@@ -7,17 +7,36 @@ from app.services.summarizer import ArticleSummarizer
 
 
 class SummaryOut(BaseModel):
+    display_headline: str | None = None
     main_takeaway: str
     supporting_lines: list[str]
+    summary_text: str | None = None
+    why_it_matters: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("display_headline")
+    @classmethod
+    def display_headline_fits_card(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return ArticleSummarizer()._fit_headline(value)
 
     @field_validator("main_takeaway")
     @classmethod
     def display_complete_sentences(cls, value: str) -> str:
         return ArticleSummarizer._fit_paragraph(
-            ArticleSummarizer._drop_truncated_sentences(value)
+            ArticleSummarizer._drop_truncated_sentences(value),
+            max_chars=320,
+            max_lines=ArticleSummarizer.SUMMARY_MAX_LINES,
         )
+
+    @field_validator("why_it_matters")
+    @classmethod
+    def why_it_matters_complete(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        return ArticleSummarizer()._fit_why_it_matters(value) or None
 
 
 class FeedArticle(BaseModel):

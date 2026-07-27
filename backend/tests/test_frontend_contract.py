@@ -139,9 +139,11 @@ def test_country_category_intersection_ranks_first():
             db.add(
                 Summary(
                     article_id=article.id,
+                    display_headline=article.title,
                     main_takeaway=f"{article.title} summary.",
                     supporting_lines=[],
                     summary_text=f"{article.title} summary.",
+                    why_it_matters=None,
                     model_name="test",
                 )
             )

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     ARTICLE_MAX_AGE_HOURS: int = Field(default=168)
     MIN_ARTICLE_TEXT_LENGTH: int = Field(default=60)
     FEED_SIZE: int = Field(default=50)
-    FEED_EDITION_SIZE: int = Field(default=50)
+    FEED_EDITION_SIZE: int = Field(default=100)
     FEED_EXPLORATION_RATIO: float = Field(default=0.25)
     MAX_FEED_ITEMS: int = Field(default=500)
     MORNING_FEED_HOUR: int = Field(default=7)

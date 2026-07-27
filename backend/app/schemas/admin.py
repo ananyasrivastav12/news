@@ -65,12 +65,18 @@ class PipelineRunQueued(BaseModel):
 class AdminOverview(BaseModel):
     total_articles: int
     fresh_articles: int
+    fresh_completed_articles: int
+    fresh_cutoff_at: datetime
     pending_summaries: int
     completed_summaries: int
     failed_summaries: int
     feed_items_generated: int
+    embedded_articles: int
+    fresh_embedded_articles: int
     users_with_feeds: int
+    users_with_interests: int
     total_users: int
+    protected_articles: int
     current_feed_size: int
     article_pool_limit: int
     max_feed_items: int
@@ -78,6 +84,12 @@ class AdminOverview(BaseModel):
     liked_count: int
     disliked_count: int
     saved_count: int
+    today_viewed_count: int
+    today_liked_count: int
+    today_disliked_count: int
+    today_saved_count: int
+    active_users_today: int
+    active_users_recent: int
     newsapi_requests_planned: int
     newsapi_page_size: int
     newsapi_daily_target: int
@@ -85,6 +97,7 @@ class AdminOverview(BaseModel):
     openai_daily_summary_limit: int
     openai_embedding_calls_planned: int
     last_successful_run_at: datetime | None = None
+    latest_content_pipeline_at: datetime | None = None
     latest_article_fetched_at: datetime | None = None
     latest_article_processed_at: datetime | None = None
     next_scheduled_run_at: datetime | None = None
@@ -101,6 +114,10 @@ class AdminArticleOut(BaseModel):
     summary_status: str
     image_present: bool
     interaction_count: int
+    viewed_count: int
+    liked_count: int
+    disliked_count: int
+    saved_count: int
     is_protected: bool
 
     model_config = ConfigDict(from_attributes=True, use_enum_values=True)
@@ -111,6 +128,10 @@ class AdminArticleSearchSummary(BaseModel):
     completed_count: int
     missing_image_count: int
     with_signal_count: int
+    viewed_count: int
+    liked_count: int
+    disliked_count: int
+    saved_count: int
 
 
 class AdminArticleDetail(AdminArticleOut):
@@ -118,7 +139,9 @@ class AdminArticleDetail(AdminArticleOut):
     description: str | None = None
     cleaned_text: str | None = None
     summary_text: str | None = None
+    display_headline: str | None = None
     main_takeaway: str | None = None
+    why_it_matters: str | None = None
 
 
 class ArticleDistributionCounts(BaseModel):
@@ -162,6 +185,7 @@ class AdminUserOut(BaseModel):
     liked_count: int
     disliked_count: int
     saved_count: int
+    has_embedding_profile: bool
     last_active: datetime | None = None
     last_feed_generated: datetime | None = None
 
@@ -178,6 +202,7 @@ class UserFeedItemOut(BaseModel):
     ranking_reason: str | None = None
     is_viewed: bool
     score: float
+    article_has_embedding: bool
     liked: bool
     saved: bool
     disliked: bool

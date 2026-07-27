@@ -45,14 +45,16 @@ function consequenceFromSummary(summary: string) {
 export function feedItemToBriefingStory(item: FeedItem): BriefingStory {
   const article = item.article;
   const originalHeadline = article.title.trim();
-  const displayHeadline = originalHeadline;
+  const displayHeadline = article.summary.display_headline?.trim() || originalHeadline;
   const shortSummary = constrainSummary(
     article.summary.main_takeaway,
     article.summary.supporting_lines
   );
-  const fullSummary = [article.summary.main_takeaway, ...article.summary.supporting_lines]
-    .filter(Boolean)
-    .join('\n\n');
+  const fullSummary =
+    article.summary.summary_text?.trim() ||
+    [article.summary.main_takeaway, ...article.summary.supporting_lines]
+      .filter(Boolean)
+      .join('\n\n');
   const sourceUrl = article.url ?? article.original_url ?? '';
 
   return {
@@ -60,7 +62,7 @@ export function feedItemToBriefingStory(item: FeedItem): BriefingStory {
     originalHeadline,
     displayHeadline,
     shortSummary,
-    whyItMatters: consequenceFromSummary(shortSummary),
+    whyItMatters: article.summary.why_it_matters?.trim() || consequenceFromSummary(shortSummary),
     fullSummary,
     sourceName: article.source || 'News source',
     sourceUrl,
@@ -73,7 +75,7 @@ export function feedItemToBriefingStory(item: FeedItem): BriefingStory {
 
 export function savedArticleToBriefingStory(article: SavedArticle): BriefingStory {
   const originalHeadline = article.title.trim();
-  const displayHeadline = originalHeadline;
+  const displayHeadline = article.summary.display_headline?.trim() || originalHeadline;
   const shortSummary = constrainSummary(
     article.summary.main_takeaway,
     article.summary.supporting_lines
@@ -83,10 +85,12 @@ export function savedArticleToBriefingStory(article: SavedArticle): BriefingStor
     originalHeadline,
     displayHeadline,
     shortSummary,
-    fullSummary: [article.summary.main_takeaway, ...article.summary.supporting_lines]
-      .filter(Boolean)
-      .join('\n\n'),
-    whyItMatters: consequenceFromSummary(shortSummary),
+    fullSummary:
+      article.summary.summary_text?.trim() ||
+      [article.summary.main_takeaway, ...article.summary.supporting_lines]
+        .filter(Boolean)
+        .join('\n\n'),
+    whyItMatters: article.summary.why_it_matters?.trim() || consequenceFromSummary(shortSummary),
     sourceName: article.source || 'News source',
     sourceUrl: article.url ?? article.original_url ?? '',
     publishedAt: article.published_at || '',

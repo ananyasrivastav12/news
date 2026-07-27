@@ -51,9 +51,36 @@ def read_admin_overview(db: Session = Depends(get_db)):
         )
         .count()
     )
+    embedded_articles = (
+        db.query(db_model.Article)
+        .filter(
+            db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED,
+            db_model.Article.embedding.isnot(None),
+        )
+        .count()
+    )
+    fresh_embedded_articles = (
+        db.query(db_model.Article)
+        .filter(
+            db_model.Article.published_at >= fresh_cutoff,
+            db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED,
+            db_model.Article.embedding.isnot(None),
+        )
+        .count()
+    )
+    _refresh_schedule_next_runs(db)
     last_successful_run = (
         db.query(db_model.PipelineRun)
         .filter(db_model.PipelineRun.status == db_model.PipelineRunStatus.SUCCEEDED)
+        .order_by(desc(db_model.PipelineRun.finished_at))
+        .first()
+    )
+    latest_content_pipeline_run = (
+        db.query(db_model.PipelineRun)
+        .filter(
+            db_model.PipelineRun.status == db_model.PipelineRunStatus.SUCCEEDED,
+            db_model.PipelineRun.run_type != "feed_generation",
+        )
         .order_by(desc(db_model.PipelineRun.finished_at))
         .first()
     )
@@ -77,11 +104,30 @@ def read_admin_overview(db: Session = Depends(get_db)):
         .order_by(db_model.PipelineSchedule.next_run_at.asc())
         .first()
     )
+    total_users = db.query(db_model.User).count()
+    protected_articles = (
+        db.query(db_model.UserArticleInteraction.article_id)
+        .filter(
+            db_model.UserArticleInteraction.interaction_type
+            == db_model.InteractionType.SAVE
+        )
+        .distinct()
+        .count()
+    )
+    today_start, today_end = _local_day_bounds(DEFAULT_TIMEZONE)
+    recent_start = datetime.now(timezone.utc) - timedelta(days=7)
     return {
         "total_articles": db.query(db_model.Article).count(),
         "fresh_articles": db.query(db_model.Article)
         .filter(db_model.Article.published_at >= fresh_cutoff)
         .count(),
+        "fresh_completed_articles": db.query(db_model.Article)
+        .filter(
+            db_model.Article.published_at >= fresh_cutoff,
+            db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED,
+        )
+        .count(),
+        "fresh_cutoff_at": fresh_cutoff,
         "pending_summaries": pending_summaries,
         "completed_summaries": db.query(db_model.Article)
         .filter(db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED)
@@ -90,8 +136,14 @@ def read_admin_overview(db: Session = Depends(get_db)):
         .filter(db_model.Article.summary_status == db_model.SummaryStatus.FAILED)
         .count(),
         "feed_items_generated": db.query(db_model.Flashcard).count(),
+        "embedded_articles": embedded_articles,
+        "fresh_embedded_articles": fresh_embedded_articles,
         "users_with_feeds": db.query(db_model.Flashcard.user_id).distinct().count(),
-        "total_users": db.query(db_model.User).count(),
+        "users_with_interests": (
+            db.query(db_model.UserInterest.user_id).distinct().count()
+        ),
+        "total_users": total_users,
+        "protected_articles": protected_articles,
         "current_feed_size": settings.feed_edition_size,
         "article_pool_limit": settings.ARTICLE_POOL_LIMIT,
         "max_feed_items": settings.MAX_FEED_ITEMS,
@@ -99,6 +151,34 @@ def read_admin_overview(db: Session = Depends(get_db)):
         "liked_count": _interaction_count(db, db_model.InteractionType.LIKE),
         "disliked_count": _interaction_count(db, db_model.InteractionType.SKIP),
         "saved_count": _interaction_count(db, db_model.InteractionType.SAVE),
+        "today_viewed_count": _interaction_count(
+            db,
+            db_model.InteractionType.VIEW,
+            created_from=today_start,
+            created_to=today_end,
+        ),
+        "today_liked_count": _interaction_count(
+            db,
+            db_model.InteractionType.LIKE,
+            created_from=today_start,
+            created_to=today_end,
+        ),
+        "today_disliked_count": _interaction_count(
+            db,
+            db_model.InteractionType.SKIP,
+            created_from=today_start,
+            created_to=today_end,
+        ),
+        "today_saved_count": _interaction_count(
+            db,
+            db_model.InteractionType.SAVE,
+            created_from=today_start,
+            created_to=today_end,
+        ),
+        "active_users_today": _active_user_count(
+            db, created_from=today_start, created_to=today_end
+        ),
+        "active_users_recent": _active_user_count(db, created_from=recent_start),
         "newsapi_requests_planned": len(settings.news_api_countries) * len(categories),
         "newsapi_page_size": settings.NEWS_API_PAGE_SIZE,
         "newsapi_daily_target": settings.NEWS_DAILY_ARTICLE_TARGET,
@@ -107,6 +187,11 @@ def read_admin_overview(db: Session = Depends(get_db)):
         "openai_embedding_calls_planned": embedding_candidates,
         "last_successful_run_at": (
             last_successful_run.finished_at if last_successful_run else None
+        ),
+        "latest_content_pipeline_at": (
+            latest_content_pipeline_run.finished_at
+            if latest_content_pipeline_run
+            else None
         ),
         "latest_article_fetched_at": (
             latest_article.fetched_at if latest_article else None
@@ -195,13 +280,17 @@ def read_admin_articles(
     category: str | None = None,
     source: str | None = None,
     summary_status: db_model.SummaryStatus | None = None,
+    fresh_only: bool = False,
     has_image: bool | None = None,
     has_signals: bool | None = None,
+    interaction_type: db_model.InteractionType | None = None,
     is_protected: bool | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    date_field: str = "published",
     market_timezone: str = DEFAULT_TIMEZONE,
     limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     query = _filtered_article_query(
@@ -210,18 +299,23 @@ def read_admin_articles(
         category=category,
         source=source,
         summary_status=summary_status,
+        fresh_only=fresh_only,
         has_image=has_image,
         has_signals=has_signals,
+        interaction_type=interaction_type,
         is_protected=is_protected,
         date_from=date_from,
         date_to=date_to,
+        date_field=date_field,
         market_timezone=market_timezone,
     ).options(selectinload(db_model.Article.interactions))
+    order_column = _article_date_column(date_field)
     articles = (
         query.order_by(
-            desc(db_model.Article.published_at).nullslast(),
-            desc(db_model.Article.fetched_at),
+            desc(order_column).nullslast(),
+            desc(db_model.Article.fetched_at).nullslast(),
         )
+        .offset(offset)
         .limit(limit)
         .all()
     )
@@ -237,11 +331,14 @@ def read_admin_article_search_summary(
     category: str | None = None,
     source: str | None = None,
     summary_status: db_model.SummaryStatus | None = None,
+    fresh_only: bool = False,
     has_image: bool | None = None,
     has_signals: bool | None = None,
+    interaction_type: db_model.InteractionType | None = None,
     is_protected: bool | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    date_field: str = "published",
     market_timezone: str = DEFAULT_TIMEZONE,
     db: Session = Depends(get_db),
 ):
@@ -251,11 +348,14 @@ def read_admin_article_search_summary(
         category=category,
         source=source,
         summary_status=summary_status,
+        fresh_only=fresh_only,
         has_image=has_image,
         has_signals=has_signals,
+        interaction_type=interaction_type,
         is_protected=is_protected,
         date_from=date_from,
         date_to=date_to,
+        date_field=date_field,
         market_timezone=market_timezone,
     )
     missing_image_filter = or_(
@@ -269,7 +369,73 @@ def read_admin_article_search_summary(
         ).count(),
         "missing_image_count": query.filter(missing_image_filter).count(),
         "with_signal_count": query.filter(db_model.Article.interactions.any()).count(),
+        "viewed_count": query.filter(
+            db_model.Article.interactions.any(
+                db_model.UserArticleInteraction.interaction_type
+                == db_model.InteractionType.VIEW
+            )
+        ).count(),
+        "liked_count": query.filter(
+            db_model.Article.interactions.any(
+                db_model.UserArticleInteraction.interaction_type
+                == db_model.InteractionType.LIKE
+            )
+        ).count(),
+        "disliked_count": query.filter(
+            db_model.Article.interactions.any(
+                db_model.UserArticleInteraction.interaction_type
+                == db_model.InteractionType.SKIP
+            )
+        ).count(),
+        "saved_count": query.filter(
+            db_model.Article.interactions.any(
+                db_model.UserArticleInteraction.interaction_type
+                == db_model.InteractionType.SAVE
+            )
+        ).count(),
     }
+
+
+@router.get("/articles/sources", response_model=list[str])
+def read_admin_article_sources(
+    country: str | None = None,
+    category: str | None = None,
+    summary_status: db_model.SummaryStatus | None = None,
+    fresh_only: bool = False,
+    has_image: bool | None = None,
+    has_signals: bool | None = None,
+    interaction_type: db_model.InteractionType | None = None,
+    is_protected: bool | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    date_field: str = "published",
+    market_timezone: str = DEFAULT_TIMEZONE,
+    db: Session = Depends(get_db),
+):
+    query = _filtered_article_query(
+        db,
+        country=country,
+        category=category,
+        source=None,
+        summary_status=summary_status,
+        fresh_only=fresh_only,
+        has_image=has_image,
+        has_signals=has_signals,
+        interaction_type=interaction_type,
+        is_protected=is_protected,
+        date_from=date_from,
+        date_to=date_to,
+        date_field=date_field,
+        market_timezone=market_timezone,
+    )
+    rows = (
+        query.with_entities(db_model.Article.source)
+        .filter(db_model.Article.source.isnot(None), db_model.Article.source != "")
+        .distinct()
+        .order_by(db_model.Article.source.asc())
+        .all()
+    )
+    return [source for (source,) in rows if source]
 
 
 @router.get(
@@ -281,20 +447,23 @@ def read_article_distribution(
     summary_status: db_model.SummaryStatus | None = None,
     date_from: date | None = None,
     date_to: date | None = None,
+    date_field: str = "published",
     market_timezone: str = DEFAULT_TIMEZONE,
     db: Session = Depends(get_db),
 ):
-    published_from, published_to = _published_date_range(
+    range_from, range_to = _published_date_range(
         date_from=date_from,
         date_to=date_to,
         market_timezone=market_timezone,
     )
+    _article_date_column(date_field)
     return build_article_distribution(
         db,
         fresh_only=fresh_only,
         summary_status=summary_status,
-        published_from=published_from,
-        published_to=published_to,
+        date_field=date_field,
+        date_from=range_from,
+        date_to=range_to,
     )
 
 
@@ -318,7 +487,13 @@ def read_admin_article(article_id: int, db: Session = Depends(get_db)):
             "description": article.description,
             "cleaned_text": article.cleaned_text,
             "summary_text": article.summary.summary_text if article.summary else None,
+            "display_headline": (
+                article.summary.display_headline if article.summary else None
+            ),
             "main_takeaway": article.summary.main_takeaway if article.summary else None,
+            "why_it_matters": (
+                article.summary.why_it_matters if article.summary else None
+            ),
         }
     )
     return row
@@ -376,6 +551,7 @@ def read_admin_users(db: Session = Depends(get_db)):
             ),
             selectinload(db_model.User.interactions),
             selectinload(db_model.User.flashcards),
+            selectinload(db_model.User.embedding_profile),
         )
         .order_by(db_model.User.email.asc())
         .all()
@@ -447,6 +623,7 @@ def read_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
             "ranking_reason": flashcard.ranking_reason,
             "is_viewed": flashcard.is_viewed,
             "score": flashcard.ranking_score,
+            "article_has_embedding": bool(flashcard.article.embedding),
             "liked": db_model.InteractionType.LIKE
             in by_article.get(flashcard.article_id, set()),
             "saved": db_model.InteractionType.SAVE
@@ -559,6 +736,7 @@ def create_summary_review(
 
 @router.get("/schedules", response_model=list[admin_schema.PipelineScheduleOut])
 def read_schedules(db: Session = Depends(get_db)):
+    _refresh_schedule_next_runs(db)
     return (
         db.query(db_model.PipelineSchedule)
         .order_by(db_model.PipelineSchedule.hour, db_model.PipelineSchedule.minute)
@@ -621,6 +799,35 @@ def delete_schedule(schedule_id: int, db: Session = Depends(get_db)):
     db.commit()
 
 
+def _refresh_schedule_next_runs(db: Session) -> None:
+    now = datetime.now(timezone.utc)
+    changed = False
+    schedules = db.query(db_model.PipelineSchedule).all()
+    for schedule in schedules:
+        if not schedule.enabled:
+            if schedule.next_run_at is not None:
+                schedule.next_run_at = None
+                changed = True
+            continue
+        next_run_at = schedule.next_run_at
+        expected_next_run_at = next_daily_run_at(schedule.hour, schedule.minute)
+        if (
+            next_run_at is None
+            or _as_utc(next_run_at) <= now
+            or abs((_as_utc(next_run_at) - expected_next_run_at).total_seconds()) > 60
+        ):
+            schedule.next_run_at = expected_next_run_at
+            changed = True
+    if changed:
+        db.commit()
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _queue_pipeline_run(
     db: Session,
     background_tasks: BackgroundTasks,
@@ -642,12 +849,47 @@ def _queue_pipeline_run(
     }
 
 
-def _interaction_count(db: Session, interaction_type: db_model.InteractionType) -> int:
-    return (
-        db.query(db_model.UserArticleInteraction)
-        .filter(db_model.UserArticleInteraction.interaction_type == interaction_type)
-        .count()
+def _interaction_count(
+    db: Session,
+    interaction_type: db_model.InteractionType,
+    *,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+) -> int:
+    query = db.query(db_model.UserArticleInteraction).filter(
+        db_model.UserArticleInteraction.interaction_type == interaction_type
     )
+    if created_from is not None:
+        query = query.filter(db_model.UserArticleInteraction.created_at >= created_from)
+    if created_to is not None:
+        query = query.filter(db_model.UserArticleInteraction.created_at < created_to)
+    return query.count()
+
+
+def _active_user_count(
+    db: Session,
+    *,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+) -> int:
+    query = db.query(db_model.UserArticleInteraction.user_id)
+    if created_from is not None:
+        query = query.filter(db_model.UserArticleInteraction.created_at >= created_from)
+    if created_to is not None:
+        query = query.filter(db_model.UserArticleInteraction.created_at < created_to)
+    return query.distinct().count()
+
+
+def _local_day_bounds(timezone_name: str) -> tuple[datetime, datetime]:
+    local_today = local_feed_date(timezone_name)
+    range_start, range_end = _published_date_range(
+        date_from=local_today,
+        date_to=local_today,
+        market_timezone=timezone_name,
+    )
+    assert range_start is not None
+    assert range_end is not None
+    return range_start, range_end
 
 
 def _filtered_article_query(
@@ -657,18 +899,22 @@ def _filtered_article_query(
     category: str | None,
     source: str | None,
     summary_status: db_model.SummaryStatus | None,
+    fresh_only: bool,
     has_image: bool | None,
     has_signals: bool | None,
+    interaction_type: db_model.InteractionType | None,
     is_protected: bool | None,
     date_from: date | None,
     date_to: date | None,
+    date_field: str,
     market_timezone: str,
 ):
-    published_from, published_to = _published_date_range(
+    range_from, range_to = _published_date_range(
         date_from=date_from,
         date_to=date_to,
         market_timezone=market_timezone,
     )
+    date_column = _article_date_column(date_field)
     query = db.query(db_model.Article)
     if country:
         query = query.filter(db_model.Article.country == country.lower())
@@ -678,6 +924,11 @@ def _filtered_article_query(
         query = query.filter(db_model.Article.source.ilike(f"%{source}%"))
     if summary_status:
         query = query.filter(db_model.Article.summary_status == summary_status)
+    if fresh_only:
+        fresh_cutoff = datetime.now(timezone.utc) - timedelta(
+            hours=settings.ARTICLE_MAX_AGE_HOURS
+        )
+        query = query.filter(db_model.Article.published_at >= fresh_cutoff)
     if has_image is not None:
         missing_image_filter = or_(
             db_model.Article.image_url.is_(None),
@@ -689,17 +940,34 @@ def _filtered_article_query(
     if has_signals is not None:
         signal_filter = db_model.Article.interactions.any()
         query = query.filter(signal_filter if has_signals else ~signal_filter)
+    if interaction_type is not None:
+        query = query.filter(
+            db_model.Article.interactions.any(
+                db_model.UserArticleInteraction.interaction_type == interaction_type
+            )
+        )
     if is_protected is not None:
         protected_filter = db_model.Article.interactions.any(
             db_model.UserArticleInteraction.interaction_type
             == db_model.InteractionType.SAVE
         )
         query = query.filter(protected_filter if is_protected else ~protected_filter)
-    if published_from is not None:
-        query = query.filter(db_model.Article.published_at >= published_from)
-    if published_to is not None:
-        query = query.filter(db_model.Article.published_at < published_to)
+    if range_from is not None:
+        query = query.filter(date_column >= range_from)
+    if range_to is not None:
+        query = query.filter(date_column < range_to)
     return query
+
+
+def _article_date_column(date_field: str):
+    if date_field == "published":
+        return db_model.Article.published_at
+    if date_field == "fetched":
+        return db_model.Article.fetched_at
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="date_field must be 'published' or 'fetched'.",
+    )
 
 
 def _published_date_range(
@@ -730,6 +998,26 @@ def _published_date_range(
 
 
 def _article_row(article: db_model.Article) -> dict[str, object]:
+    viewed_count = sum(
+        1
+        for interaction in article.interactions
+        if interaction.interaction_type == db_model.InteractionType.VIEW
+    )
+    liked_count = sum(
+        1
+        for interaction in article.interactions
+        if interaction.interaction_type == db_model.InteractionType.LIKE
+    )
+    disliked_count = sum(
+        1
+        for interaction in article.interactions
+        if interaction.interaction_type == db_model.InteractionType.SKIP
+    )
+    saved_count = sum(
+        1
+        for interaction in article.interactions
+        if interaction.interaction_type == db_model.InteractionType.SAVE
+    )
     is_protected = any(
         interaction.interaction_type == db_model.InteractionType.SAVE
         for interaction in article.interactions
@@ -745,6 +1033,10 @@ def _article_row(article: db_model.Article) -> dict[str, object]:
         "summary_status": article.summary_status.value,
         "image_present": bool(article.image_url),
         "interaction_count": len(article.interactions),
+        "viewed_count": viewed_count,
+        "liked_count": liked_count,
+        "disliked_count": disliked_count,
+        "saved_count": saved_count,
         "is_protected": is_protected,
     }
 
@@ -795,6 +1087,9 @@ def _user_row(user: db_model.User) -> dict[str, object]:
             1
             for item in interactions
             if item.interaction_type == db_model.InteractionType.SAVE
+        ),
+        "has_embedding_profile": bool(
+            user.embedding_profile is not None and user.embedding_profile.embedding
         ),
         "last_active": last_active,
         "last_feed_generated": last_feed_generated,

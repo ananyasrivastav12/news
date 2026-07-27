@@ -25,8 +25,11 @@ export type FeedItem = {
     image_url: string | null;
     keywords: string[];
     summary: {
+      display_headline?: string | null;
       main_takeaway: string;
       supporting_lines: string[];
+      summary_text?: string | null;
+      why_it_matters?: string | null;
     };
   };
 };

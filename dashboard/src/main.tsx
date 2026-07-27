@@ -7,12 +7,18 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 type Overview = {
   total_articles: number;
   fresh_articles: number;
+  fresh_completed_articles: number;
+  fresh_cutoff_at: string;
   pending_summaries: number;
   completed_summaries: number;
   failed_summaries: number;
   feed_items_generated: number;
+  embedded_articles: number;
+  fresh_embedded_articles: number;
   users_with_feeds: number;
+  users_with_interests: number;
   total_users: number;
+  protected_articles: number;
   current_feed_size: number;
   article_pool_limit: number;
   max_feed_items: number;
@@ -20,6 +26,12 @@ type Overview = {
   liked_count: number;
   disliked_count: number;
   saved_count: number;
+  today_viewed_count: number;
+  today_liked_count: number;
+  today_disliked_count: number;
+  today_saved_count: number;
+  active_users_today: number;
+  active_users_recent: number;
   newsapi_requests_planned: number;
   newsapi_page_size: number;
   newsapi_daily_target: number;
@@ -27,6 +39,7 @@ type Overview = {
   openai_daily_summary_limit: number;
   openai_embedding_calls_planned: number;
   last_successful_run_at: string | null;
+  latest_content_pipeline_at: string | null;
   latest_article_fetched_at: string | null;
   latest_article_processed_at: string | null;
   next_scheduled_run_at: string | null;
@@ -43,6 +56,7 @@ type PipelineRun = {
   inserted_count: number;
   summarized_count: number;
   summary_failed_count: number;
+  embedded_count: number;
   feed_items_count: number;
   error_message: string | null;
   metadata_json: Record<string, unknown>;
@@ -66,6 +80,10 @@ type Article = {
   summary_status: string;
   image_present: boolean;
   interaction_count: number;
+  viewed_count: number;
+  liked_count: number;
+  disliked_count: number;
+  saved_count: number;
   is_protected: boolean;
 };
 
@@ -74,6 +92,10 @@ type ArticleSearchSummary = {
   completed_count: number;
   missing_image_count: number;
   with_signal_count: number;
+  viewed_count: number;
+  liked_count: number;
+  disliked_count: number;
+  saved_count: number;
 };
 
 type DistributionCounts = {
@@ -117,6 +139,7 @@ type AdminUser = {
   liked_count: number;
   disliked_count: number;
   saved_count: number;
+  has_embedding_profile: boolean;
   last_active: string | null;
   last_feed_generated: string | null;
 };
@@ -133,6 +156,7 @@ type FeedItem = {
   ranking_reason: string | null;
   is_viewed: boolean;
   score: number;
+  article_has_embedding: boolean;
   liked: boolean;
   saved: boolean;
   disliked: boolean;
@@ -161,6 +185,7 @@ type Schedule = {
 };
 
 type Tab = "home" | "control" | "quality" | "articles" | "users";
+type DateScope = "fresh" | "today" | "fetched_today" | "all" | "custom";
 type Tone = "neutral" | "good" | "warn" | "bad";
 type IconName = "home" | "control" | "quality" | "articles" | "users" | "signout";
 
@@ -337,7 +362,6 @@ function HomePage({ api }: { api: Api }) {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [runs, setRuns] = useState<PipelineRun[]>([]);
   const [distribution, setDistribution] = useState<ArticleDistribution | null>(null);
-  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -346,19 +370,16 @@ function HomePage({ api }: { api: Api }) {
       api.get<Overview>("/api/admin/overview"),
       api.get<PipelineRun[]>("/api/admin/pipeline-runs?limit=5"),
       api.get<ArticleDistribution>("/api/admin/article-distribution"),
-      api.get<Schedule[]>("/api/admin/schedules"),
     ])
-      .then(([nextOverview, nextRuns, nextDistribution, nextSchedules]) => {
+      .then(([nextOverview, nextRuns, nextDistribution]) => {
         setOverview(nextOverview);
         setRuns(nextRuns);
         setDistribution(nextDistribution);
-        setSchedules(nextSchedules);
       })
       .catch(() => {
         setOverview(null);
         setRuns([]);
         setDistribution(null);
-        setSchedules([]);
       })
       .finally(() => setLoading(false));
   }, [api]);
@@ -367,173 +388,134 @@ function HomePage({ api }: { api: Api }) {
   if (!overview) return <EmptyState message="Overview could not be loaded." />;
 
   const latestRun = runs[0] ?? null;
-  const warnings = buildHomeWarnings(overview, latestRun, distribution, schedules);
-  const healthTone = warnings.some((warning) => warning.tone === "bad")
+  const warnings = buildHomeWarnings(overview, latestRun, distribution);
+  const missingEmbeddings = overview.openai_embedding_calls_planned;
+  const healthTone =
+    latestRun?.status === "failed"
     ? "bad"
-    : warnings.some((warning) => warning.tone === "warn")
+    : overview.completed_summaries === 0 || overview.pending_summaries > 0
       ? "warn"
       : "good";
   const healthLabel =
     healthTone === "bad"
       ? "Needs attention"
       : healthTone === "warn"
-        ? "Watch closely"
-        : "System ready";
-  const readiness = buildEditionReadiness(schedules);
+        ? "Needs summaries"
+        : "Ready";
+  const usersMissingInterests = Math.max(
+    0,
+    overview.total_users - overview.users_with_interests,
+  );
+  const todaySignals =
+    overview.today_viewed_count +
+    overview.today_liked_count +
+    overview.today_disliked_count +
+    overview.today_saved_count;
+  const coverageItems = buildCoverageSummary(distribution);
 
   return (
     <section className="home-page">
       <PageTitle title="Home" />
       <div className={`home-hero ${healthTone}`}>
         <div>
-          <span className="eyebrow">Current State</span>
+          <span className="eyebrow">App Health</span>
           <h3>{healthLabel}</h3>
           <p>
-            {overview.fresh_articles.toLocaleString()} fresh articles,{" "}
-            {overview.completed_summaries.toLocaleString()} completed summaries, and{" "}
-            {overview.total_users.toLocaleString()} beta users.
+            {overview.total_articles.toLocaleString()} retained articles,{" "}
+            {overview.completed_summaries.toLocaleString()} summarized,{" "}
+            {missingEmbeddings.toLocaleString()} missing embeddings.
           </p>
         </div>
       </div>
-      <div className="home-grid">
-        <div className="home-main">
-          <div className="metric-grid priority-metrics">
-            <MetricTile label="Fresh articles" value={overview.fresh_articles} />
-            <MetricTile label="Ready summaries" value={overview.completed_summaries} />
-            <MetricTile label="Total articles" value={overview.total_articles} />
-            <MetricTile label="Feed items" value={overview.feed_items_generated} />
+      <div className="dashboard-sections">
+        <ChartPanel title="Content" className="compact-kpi-panel content-panel">
+          <div className="metric-grid priority-metrics content-metrics">
             <MetricTile
-              label="Pending summaries"
+              label="Current pool"
+              value={overview.total_articles}
+              tone={overview.total_articles > 0 ? "good" : "bad"}
+            />
+            <MetricTile label="Pool limit" value={overview.article_pool_limit} />
+            <MetricTile
+              label="Summarized"
+              value={overview.completed_summaries}
+              tone={overview.completed_summaries > 0 ? "good" : "bad"}
+            />
+            <MetricTile
+              label="Pending"
               value={overview.pending_summaries}
               tone={overview.pending_summaries > 0 ? "warn" : "neutral"}
             />
             <MetricTile
-              label="Failed summaries"
-              value={overview.failed_summaries}
-              tone={overview.failed_summaries > 0 ? "bad" : "neutral"}
+              label="Missing embeddings"
+              value={missingEmbeddings}
+              tone={missingEmbeddings > 0 ? "warn" : "good"}
             />
-            <MetricTile label="Beta users" value={overview.total_users} />
-            <MetricTile label="Views" value={overview.viewed_count} />
-            <MetricTile label="Saved" value={overview.saved_count} />
+            <MetricTile
+              label="Protected saved"
+              value={overview.protected_articles}
+              tone={overview.protected_articles > 0 ? "neutral" : "good"}
+            />
+            <MetricTile
+              label="Last pipeline"
+              valueText={formatDateShort(overview.latest_content_pipeline_at)}
+              className="date-metric"
+              tone={overview.latest_content_pipeline_at ? "good" : "warn"}
+            />
           </div>
-          <ChartPanel
-            title="Edition Readiness"
-            subtitle="Schedule coverage for the three daily editions."
-          >
-            <div className="edition-grid">
-              {readiness.map((edition) => (
-                <StatusCard
-                  key={edition.label}
-                  label={edition.label}
-                  value={edition.value}
-                  tone={edition.tone}
-                />
-              ))}
-            </div>
-          </ChartPanel>
-          {distribution ? (
-            <ChartPanel
-              title="Market Health"
-              subtitle="Ready article supply by market."
-              meta={`Fresh since ${formatDate(distribution.fresh_cutoff)}`}
-            >
-              <div className="market-health-grid">
-                {distribution.by_country.map((item) => (
-                  <StatusCard
-                    key={item.country}
-                    label={countryLabel(item.country)}
-                    value={`${item.completed_count.toLocaleString()} ready · ${item.fresh_count.toLocaleString()} fresh`}
-                    tone={item.completed_count > 0 ? "good" : "bad"}
-                  />
-                ))}
-              </div>
-            </ChartPanel>
-          ) : null}
-        </div>
-        <div className="home-side">
-          <ChartPanel
-            title="Attention"
-            subtitle="What to check before opening the app."
-          >
-            <div className="warning-list">
-              {warnings.map((warning) => (
-                <StatusCard
-                  key={warning.label}
-                  label={warning.label}
-                  value={warning.value}
-                  tone={warning.tone}
-                />
-              ))}
-            </div>
-          </ChartPanel>
-          <ChartPanel title="Backend Activity">
-            {latestRun ? (
-              <div className="pipeline-summary">
-                <StatusCard
-                  label={`Admin run #${latestRun.id}`}
-                  value={latestRun.run_type}
-                  tone={latestRun.status === "succeeded" ? "good" : "bad"}
-                />
-                <StatusCard
-                  label="Status"
-                  value={latestRun.status}
-                  tone={latestRun.status === "succeeded" ? "good" : "bad"}
-                />
-                <StatusCard
-                  label="Inserted"
-                  value={latestRun.inserted_count.toLocaleString()}
-                />
-                <StatusCard
-                  label="Summaries"
-                  value={latestRun.summarized_count.toLocaleString()}
-                />
-                <StatusCard
-                  label="Last admin success"
-                  value={formatDate(overview.last_successful_run_at)}
-                  tone={overview.last_successful_run_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Latest article fetch"
-                  value={formatDate(overview.latest_article_fetched_at)}
-                  tone={overview.latest_article_fetched_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Latest summary/update"
-                  value={formatDate(overview.latest_article_processed_at)}
-                  tone={overview.latest_article_processed_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Next scheduled"
-                  value={formatDate(overview.next_scheduled_run_at)}
-                  tone={overview.next_scheduled_run_at ? "good" : "warn"}
-                />
-              </div>
-            ) : (
-              <div className="pipeline-summary">
-                <StatusCard
-                  label="Last admin success"
-                  value={formatDate(overview.last_successful_run_at)}
-                  tone={overview.last_successful_run_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Latest article fetch"
-                  value={formatDate(overview.latest_article_fetched_at)}
-                  tone={overview.latest_article_fetched_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Latest summary/update"
-                  value={formatDate(overview.latest_article_processed_at)}
-                  tone={overview.latest_article_processed_at ? "good" : "warn"}
-                />
-                <StatusCard
-                  label="Next scheduled"
-                  value={formatDate(overview.next_scheduled_run_at)}
-                  tone={overview.next_scheduled_run_at ? "good" : "warn"}
-                />
-              </div>
-            )}
-          </ChartPanel>
-        </div>
+        </ChartPanel>
+
+        <ChartPanel title="Coverage">
+          <div className="minimal-status-grid">
+            {coverageItems.map((item) => (
+              <StatusCard
+                key={item.label}
+                label={item.label}
+                value={item.value}
+                tone={item.tone}
+              />
+            ))}
+          </div>
+        </ChartPanel>
+
+        <ChartPanel title="Users">
+          <div className="metric-grid user-health-metrics">
+            <MetricTile label="Total users" value={overview.total_users} />
+            <MetricTile
+              label="Active today"
+              value={overview.active_users_today}
+              tone={overview.active_users_today > 0 ? "good" : "neutral"}
+            />
+            <MetricTile
+              label="Active 7d"
+              value={overview.active_users_recent}
+              tone={overview.active_users_recent > 0 ? "good" : "neutral"}
+            />
+            <MetricTile
+              label="No interests"
+              value={usersMissingInterests}
+              tone={usersMissingInterests > 0 ? "warn" : "good"}
+            />
+            <MetricTile
+              label="Today signals"
+              value={todaySignals}
+              tone={todaySignals > 0 ? "good" : "neutral"}
+            />
+          </div>
+        </ChartPanel>
+
+        <ChartPanel title="Attention">
+          <div className="minimal-status-grid">
+            {warnings.map((warning) => (
+              <StatusCard
+                key={warning.label}
+                label={warning.label}
+                value={warning.value}
+                tone={warning.tone}
+              />
+            ))}
+          </div>
+        </ChartPanel>
       </div>
     </section>
   );
@@ -545,9 +527,8 @@ function ControlPage({ api }: { api: Api }) {
       <PageTitle title="Control" />
       <div className="control-console">
         <PipelineRunsSection api={api}>
-          <div className="control-management-grid">
+          <div className="control-management-grid single">
             <UserCreatePanel api={api} />
-            <SchedulerPanel api={api} />
           </div>
         </PipelineRunsSection>
       </div>
@@ -651,10 +632,7 @@ function PipelineRunsSection({
   }, [api, runs]);
 
   async function run(path: string, label: string, body?: unknown) {
-    if (
-      label === "Full pipeline" &&
-      !window.confirm("Run the full pipeline now?")
-    ) {
+    if (label === "Content pipeline" && !window.confirm("Run the content pipeline now?")) {
       return;
     }
     setPendingAction(label);
@@ -688,14 +666,14 @@ function PipelineRunsSection({
         <SectionHeader title="Pipeline" />
         <div className="pipeline-actions">
           <PipelineActionCard
-            title="Full pipeline"
+            title="Content pipeline"
             description="Fetch + summarize"
             tone="primary"
-            busy={pendingAction === "Full pipeline"}
+            busy={pendingAction === "Content pipeline"}
             disabled={pendingAction !== null}
             buttonLabel="Run"
             buttonClassName="quiet-action-button"
-            onClick={() => run("/api/admin/pipeline-runs/full", "Full pipeline")}
+            onClick={() => run("/api/admin/pipeline-runs/full", "Content pipeline")}
           />
           <PipelineActionCard
             title="Ingest articles"
@@ -723,7 +701,7 @@ function PipelineRunsSection({
       {children}
       {loading ? <InlineState message="Loading runs..." /> : null}
       <ChartPanel title="Recent Runs">
-        <CompactTable className="runs-table" minWidth={860}>
+        <CompactTable className="runs-table" minWidth={1120}>
           <thead>
             <tr>
               <th>ID</th>
@@ -733,7 +711,9 @@ function PipelineRunsSection({
               <th>Finished</th>
               <th>Fetched</th>
               <th>Inserted</th>
+              <th>Pruned</th>
               <th>Summaries</th>
+              <th>Embedded</th>
               <th>Failures</th>
               <th>Details</th>
             </tr>
@@ -741,7 +721,7 @@ function PipelineRunsSection({
           <tbody>
             {!loading && runs.length === 0 ? (
               <tr>
-                <td colSpan={10} className="empty-table-cell">
+                <td colSpan={12} className="empty-table-cell">
                   No pipeline runs yet.
                 </td>
               </tr>
@@ -749,6 +729,9 @@ function PipelineRunsSection({
             {visibleRuns.map((run) => {
               const hasDetails = Boolean(
                 objectValue(run.metadata_json.ingestion) ||
+                  objectValue(run.metadata_json.summarization) ||
+                  objectValue(run.metadata_json.feeds) ||
+                  objectValue(run.metadata_json.embeddings) ||
                   articleDistributionValue(run.metadata_json.article_distribution),
               );
               return (
@@ -761,7 +744,9 @@ function PipelineRunsSection({
                     <td>{formatDate(run.finished_at)}</td>
                     <td>{run.fetched_count}</td>
                     <td>{run.inserted_count}</td>
+                    <td>{formatOptionalNumber(runPrunedCount(run))}</td>
                     <td>{run.summarized_count}</td>
+                    <td>{run.embedded_count}</td>
                     <td>{run.summary_failed_count}</td>
                     <td>
                       <button
@@ -831,18 +816,39 @@ function PipelineActionCard({
 
 function RunDetails({ run }: { run: PipelineRun }) {
   const ingestion = objectValue(run.metadata_json.ingestion);
+  const summarization = objectValue(run.metadata_json.summarization);
+  const feeds = objectValue(run.metadata_json.feeds);
+  const embeddings = objectValue(run.metadata_json.embeddings);
   const distribution = articleDistributionValue(run.metadata_json.article_distribution);
-  if (!ingestion && !distribution) {
+  if (!ingestion && !summarization && !feeds && !embeddings && !distribution) {
     return null;
   }
   return (
     <tr className="run-details-row">
-      <td colSpan={10}>
+      <td colSpan={12}>
         <div className="run-details">
           {ingestion ? (
             <div className="run-detail-block">
-              <h4>Inserted This Run</h4>
+              <h4>Ingestion</h4>
               <RunBreakdown metadata={ingestion} />
+            </div>
+          ) : null}
+          {summarization ? (
+            <div className="run-detail-block">
+              <h4>Summarization</h4>
+              <RunSummarizationSummary metadata={summarization} />
+            </div>
+          ) : null}
+          {feeds ? (
+            <div className="run-detail-block">
+              <h4>Feed Output</h4>
+              <RunFeedSummary metadata={feeds} />
+            </div>
+          ) : null}
+          {embeddings ? (
+            <div className="run-detail-block">
+              <h4>Embeddings</h4>
+              <RunEmbeddingSummary metadata={embeddings} />
             </div>
           ) : null}
           {distribution ? (
@@ -857,35 +863,88 @@ function RunDetails({ run }: { run: PipelineRun }) {
   );
 }
 
+function RunSummarizationSummary({ metadata }: { metadata: Record<string, unknown> }) {
+  return (
+    <div className="compact-distribution">
+      <span>{Number(metadata.processed ?? 0).toLocaleString()} summarized</span>
+      <span>{Number(metadata.embedded ?? 0).toLocaleString()} embedded</span>
+      <span>{Number(metadata.failed ?? 0).toLocaleString()} failed</span>
+    </div>
+  );
+}
+
+function RunEmbeddingSummary({ metadata }: { metadata: Record<string, unknown> }) {
+  return (
+    <div className="compact-distribution">
+      <span>{Number(metadata.embedded ?? 0).toLocaleString()} articles embedded</span>
+    </div>
+  );
+}
+
+function RunFeedSummary({ metadata }: { metadata: Record<string, unknown> }) {
+  if (metadata.skipped) {
+    return <p>{String(metadata.reason ?? "Feed generation skipped.")}</p>;
+  }
+  const byEdition = objectValue(metadata.by_edition);
+  return (
+    <div className="compact-distribution">
+      <span>{Number(metadata.feed_items ?? 0).toLocaleString()} cards</span>
+      <span>{Number(metadata.users ?? 0).toLocaleString()} users</span>
+      <span>{editionLabel(String(metadata.edition_type ?? "-"))}</span>
+      <span>{timezoneLabel(String(metadata.market_timezone ?? "-"))}</span>
+      {metadata.feed_date ? <span>{String(metadata.feed_date)}</span> : null}
+      {byEdition
+        ? Object.entries(byEdition).map(([edition, count]) => (
+          <span key={edition}>
+            {editionLabel(edition)} {Number(count ?? 0).toLocaleString()}
+          </span>
+        ))
+        : null}
+    </div>
+  );
+}
+
 function RunBreakdown({ metadata }: { metadata: Record<string, unknown> }) {
   const byCountry = objectValue(metadata.by_country);
   const byCategory = objectValue(metadata.by_category);
   const byCountryCategory = objectValue(metadata.by_country_category);
+  const fetched = Number(metadata.fetched ?? 0);
+  const inserted = Number(metadata.inserted ?? 0);
+  const pruned = Number(metadata.pruned ?? 0);
+  const target = Number(metadata.target ?? 0);
   return (
-    <div className="run-breakdown">
-      <div className="run-breakdown-item">
-        <strong>Markets</strong>
-        <BreakdownChips value={describeFetchInsertBreakdown(byCountry)} />
+    <div className="run-detail-stack">
+      <div className="compact-distribution">
+        <span>{fetched.toLocaleString()} fetched</span>
+        <span>{inserted.toLocaleString()} inserted</span>
+        <span>{pruned.toLocaleString()} pruned</span>
+        {target > 0 ? <span>{target.toLocaleString()} target</span> : null}
       </div>
-      <div className="run-breakdown-item">
-        <strong>Categories</strong>
-        <BreakdownChips value={describeFetchInsertBreakdown(byCategory)} />
-      </div>
-      <div className="run-breakdown-item wide">
-        <strong>Intersections</strong>
-        <BreakdownChips value={describeNestedFetchInsertBreakdown(byCountryCategory)} />
+      <div className="run-breakdown">
+        <div className="run-breakdown-item">
+          <strong>Markets</strong>
+          <BreakdownChips items={describeFetchInsertBreakdown(byCountry, countryLabel)} />
+        </div>
+        <div className="run-breakdown-item">
+          <strong>Categories</strong>
+          <BreakdownChips items={describeFetchInsertBreakdown(byCategory, titleCase)} />
+        </div>
+        <div className="run-breakdown-item wide">
+          <strong>Intersections</strong>
+          <BreakdownChips items={describeNestedFetchInsertBreakdown(byCountryCategory)} />
+        </div>
       </div>
     </div>
   );
 }
 
-function BreakdownChips({ value }: { value: string }) {
-  if (value === "-") {
+function BreakdownChips({ items }: { items: string[] }) {
+  if (items.length === 0) {
     return <p>-</p>;
   }
   return (
     <div className="breakdown-chips">
-      {value.split(" · ").map((item) => (
+      {items.map((item) => (
         <span key={item}>{item}</span>
       ))}
     </div>
@@ -901,7 +960,8 @@ function CompactDistribution({
     <div className="compact-distribution">
       {distribution.by_country.map((item) => (
         <span key={item.country}>
-          {countryLabel(item.country)} {item.completed_count}/{item.total_count} ready
+          {countryLabel(item.country)}: {item.completed_count.toLocaleString()} ready of{" "}
+          {item.total_count.toLocaleString()}
         </span>
       ))}
       {distribution.by_country_category
@@ -910,7 +970,8 @@ function CompactDistribution({
         .map((item) => (
           <span key={`${item.country}-${item.category}`}>
             {countryLabel(item.country)} {titleCase(item.category)}{" "}
-            {item.completed_count}/{item.total_count}
+            {item.completed_count.toLocaleString()} ready of{" "}
+            {item.total_count.toLocaleString()}
           </span>
         ))}
     </div>
@@ -920,7 +981,7 @@ function CompactDistribution({
 function QualityPage({ api }: { api: Api }) {
   const [distribution, setDistribution] = useState<ArticleDistribution | null>(null);
   const [status, setStatus] = useState("");
-  const [dateScope, setDateScope] = useState<"today" | "all" | "custom">("today");
+  const [dateScope, setDateScope] = useState<DateScope>("fresh");
   const [dateFrom, setDateFrom] = useState(todayDateInput("America/New_York"));
   const [dateTo, setDateTo] = useState(todayDateInput("America/New_York"));
   const [marketTimezone, setMarketTimezone] = useState("America/New_York");
@@ -957,13 +1018,13 @@ function QualityPage({ api }: { api: Api }) {
       <div className="toolbar quality-filter-bar">
         <select
           value={dateScope}
-          onChange={(event) =>
-            setDateScope(event.target.value as "today" | "all" | "custom")
-          }
+          onChange={(event) => setDateScope(event.target.value as DateScope)}
         >
-          <option value="today">Today</option>
-          <option value="all">All time</option>
-          <option value="custom">Custom</option>
+          <option value="fresh">Published last 7d</option>
+          <option value="today">Published today</option>
+          <option value="fetched_today">Fetched today</option>
+          <option value="all">Current pool</option>
+          <option value="custom">Published range</option>
         </select>
         {dateScope === "custom" ? (
           <>
@@ -1005,6 +1066,7 @@ function QualityPage({ api }: { api: Api }) {
 function ArticlesPage({ api }: { api: Api }) {
   const [articles, setArticles] = useState<Article[]>([]);
   const [articleSummary, setArticleSummary] = useState<ArticleSearchSummary | null>(null);
+  const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [country, setCountry] = useState("");
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
@@ -1012,39 +1074,50 @@ function ArticlesPage({ api }: { api: Api }) {
   const [imageFilter, setImageFilter] = useState("");
   const [signalsFilter, setSignalsFilter] = useState("");
   const [protectedFilter, setProtectedFilter] = useState("");
-  const [dateScope, setDateScope] = useState<"today" | "all" | "custom">("today");
+  const [dateScope, setDateScope] = useState<DateScope>("fresh");
   const [dateFrom, setDateFrom] = useState(todayDateInput("America/New_York"));
   const [dateTo, setDateTo] = useState(todayDateInput("America/New_York"));
   const [marketTimezone, setMarketTimezone] = useState("America/New_York");
   const [limit, setLimit] = useState(100);
+  const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [isApplyingFilters, setIsApplyingFilters] = useState(false);
 
-  async function refresh() {
+  async function refresh(nextOffset = offset) {
     const params = new URLSearchParams();
     if (country) params.set("country", country);
     if (category) params.set("category", category);
     if (status) params.set("summary_status", status);
-    if (source.trim()) params.set("source", source.trim());
     if (imageFilter) params.set("has_image", imageFilter);
-    if (signalsFilter) params.set("has_signals", signalsFilter);
+    if (signalsFilter === "any") params.set("has_signals", "true");
+    if (signalsFilter === "none") params.set("has_signals", "false");
+    if (["view", "like", "skip", "save"].includes(signalsFilter)) {
+      params.set("interaction_type", signalsFilter);
+    }
     if (protectedFilter) params.set("is_protected", protectedFilter);
     params.set("market_timezone", marketTimezone);
     appendDateScope(params, dateScope, dateFrom, dateTo, marketTimezone);
+    const sourceParams = new URLSearchParams(params);
+    if (source) params.set("source", source);
     const tableParams = new URLSearchParams(params);
     tableParams.set("limit", String(limit));
+    tableParams.set("offset", String(nextOffset));
     setLoading(true);
     setIsApplyingFilters(true);
     try {
-      const [nextArticles, nextSummary] = await Promise.all([
+      const [nextArticles, nextSummary, nextSources] = await Promise.all([
         api.get<Article[]>(`/api/admin/articles?${tableParams}`),
         api.get<ArticleSearchSummary>(`/api/admin/articles/summary?${params}`),
+        api.get<string[]>(`/api/admin/articles/sources?${sourceParams}`),
       ]);
       setArticles(nextArticles);
       setArticleSummary(nextSummary);
+      setSourceOptions(nextSources);
+      setOffset(nextOffset);
     } catch {
       setArticles([]);
       setArticleSummary(null);
+      setSourceOptions([]);
     } finally {
       setLoading(false);
       setIsApplyingFilters(false);
@@ -1055,27 +1128,35 @@ function ArticlesPage({ api }: { api: Api }) {
     void refresh();
   }, [api]);
 
+  const totalMatches = articleSummary?.total_count ?? 0;
+  const pageStart = totalMatches === 0 ? 0 : offset + 1;
+  const pageEnd = Math.min(offset + articles.length, totalMatches);
+  const canPageBack = offset > 0 && !loading;
+  const canPageForward = offset + limit < totalMatches && !loading;
+  const visibleSourceOptions =
+    source && !sourceOptions.includes(source) ? [source, ...sourceOptions] : sourceOptions;
+
   return (
     <section className="articles-page">
       <PageTitle title="Articles" />
-      <ChartPanel title="Inventory">
-        <div className="article-filter-grid">
-          <label>
+      <ChartPanel title="Current Pool" className="article-pool-panel">
+        <div className="article-filter-grid compact-filter-grid">
+          <label className="field-date">
             Date
             <select
               value={dateScope}
-              onChange={(event) =>
-                setDateScope(event.target.value as "today" | "all" | "custom")
-              }
+              onChange={(event) => setDateScope(event.target.value as DateScope)}
             >
-              <option value="today">Today</option>
-              <option value="all">All time</option>
-              <option value="custom">Custom</option>
+              <option value="fresh">Published last 7d</option>
+              <option value="today">Published today</option>
+              <option value="fetched_today">Fetched today</option>
+              <option value="all">Current pool</option>
+              <option value="custom">Published range</option>
             </select>
           </label>
           {dateScope === "custom" ? (
             <>
-              <label>
+              <label className="field-date-from">
                 From
                 <input
                   type="date"
@@ -1083,7 +1164,7 @@ function ArticlesPage({ api }: { api: Api }) {
                   onChange={(event) => setDateFrom(event.target.value)}
                 />
               </label>
-              <label>
+              <label className="field-date-to">
                 To
                 <input
                   type="date"
@@ -1093,7 +1174,7 @@ function ArticlesPage({ api }: { api: Api }) {
               </label>
             </>
           ) : null}
-          <label>
+          <label className="field-zone">
             Day zone
             <select
               value={marketTimezone}
@@ -1103,7 +1184,7 @@ function ArticlesPage({ api }: { api: Api }) {
               <option value="Asia/Kolkata">India</option>
             </select>
           </label>
-          <label>
+          <label className="field-market">
             Market
             <select value={country} onChange={(event) => setCountry(event.target.value)}>
               <option value="">All</option>
@@ -1111,7 +1192,7 @@ function ArticlesPage({ api }: { api: Api }) {
               <option value="in">India</option>
             </select>
           </label>
-          <label>
+          <label className="field-category">
             Category
             <select value={category} onChange={(event) => setCategory(event.target.value)}>
               <option value="">All</option>
@@ -1122,7 +1203,7 @@ function ArticlesPage({ api }: { api: Api }) {
               ))}
             </select>
           </label>
-          <label>
+          <label className="field-summary">
             Summary
             <select value={status} onChange={(event) => setStatus(event.target.value)}>
               <option value="">All</option>
@@ -1131,15 +1212,18 @@ function ArticlesPage({ api }: { api: Api }) {
               <option value="failed">Failed</option>
             </select>
           </label>
-          <label>
+          <label className="field-source">
             Source
-            <input
-              value={source}
-              onChange={(event) => setSource(event.target.value)}
-              placeholder="Any source"
-            />
+            <select value={source} onChange={(event) => setSource(event.target.value)}>
+              <option value="">All</option>
+              {visibleSourceOptions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
           </label>
-          <label>
+          <label className="field-image">
             Image
             <select
               value={imageFilter}
@@ -1150,33 +1234,40 @@ function ArticlesPage({ api }: { api: Api }) {
               <option value="false">Missing image</option>
             </select>
           </label>
-          <label>
+          <label className="field-signals">
             User signals
             <select
               value={signalsFilter}
               onChange={(event) => setSignalsFilter(event.target.value)}
             >
               <option value="">All</option>
-              <option value="true">Has signals</option>
-              <option value="false">No signals</option>
+              <option value="any">Any signal</option>
+              <option value="none">No signals</option>
+              <option value="view">Viewed</option>
+              <option value="like">Liked</option>
+              <option value="skip">Disliked</option>
+              <option value="save">Saved</option>
             </select>
           </label>
-          <label>
-            Saved
+          <label className="field-protected">
+            Protected
             <select
               value={protectedFilter}
               onChange={(event) => setProtectedFilter(event.target.value)}
             >
               <option value="">All</option>
-              <option value="true">Saved</option>
-              <option value="false">Not saved</option>
+              <option value="true">Protected by save</option>
+              <option value="false">Not protected</option>
             </select>
           </label>
-          <label>
+          <label className="field-rows">
             Rows
             <select
               value={limit}
-              onChange={(event) => setLimit(Number(event.target.value))}
+              onChange={(event) => {
+                setLimit(Number(event.target.value));
+                setOffset(0);
+              }}
             >
               <option value={50}>50</option>
               <option value={100}>100</option>
@@ -1185,15 +1276,23 @@ function ArticlesPage({ api }: { api: Api }) {
             </select>
           </label>
           <div className="filter-action-cell">
-            <ActionButton busy={isApplyingFilters} busyLabel="Applying..." onClick={refresh}>
+            <ActionButton
+              busy={isApplyingFilters}
+              busyLabel="Applying..."
+              onClick={() => refresh(0)}
+            >
               Apply
             </ActionButton>
           </div>
         </div>
-        <div className="article-inventory-summary">
-          <MetricTile label="Matching" value={articleSummary?.total_count ?? 0} />
+        <div className="article-inventory-summary compact-kpis">
+          <MetricTile label="Matched retained" value={articleSummary?.total_count ?? 0} />
           <MetricTile label="Shown" value={articles.length} />
           <MetricTile label="Ready" value={articleSummary?.completed_count ?? 0} />
+          <MetricTile label="Viewed" value={articleSummary?.viewed_count ?? 0} />
+          <MetricTile label="Liked" value={articleSummary?.liked_count ?? 0} />
+          <MetricTile label="Disliked" value={articleSummary?.disliked_count ?? 0} />
+          <MetricTile label="Saved" value={articleSummary?.saved_count ?? 0} />
           <MetricTile
             label="Missing images"
             value={articleSummary?.missing_image_count ?? 0}
@@ -1203,7 +1302,6 @@ function ArticlesPage({ api }: { api: Api }) {
                 : "neutral"
             }
           />
-          <MetricTile label="With user signals" value={articleSummary?.with_signal_count ?? 0} />
         </div>
       </ChartPanel>
       {loading ? <InlineState message="Loading articles..." /> : null}
@@ -1218,7 +1316,7 @@ function ArticlesPage({ api }: { api: Api }) {
               <th>Published</th>
               <th>Summary</th>
               <th>Image</th>
-              <th>User signals</th>
+              <th>Signals</th>
               <th>Protected</th>
             </tr>
           </thead>
@@ -1239,12 +1337,36 @@ function ArticlesPage({ api }: { api: Api }) {
                 <td>{formatDate(article.published_at)}</td>
                 <td><Badge value={article.summary_status} /></td>
                 <td>{article.image_present ? "Yes" : "No"}</td>
-                <td>{article.interaction_count}</td>
+                <td>{articleSignalSummary(article)}</td>
                 <td>{article.is_protected ? "Yes" : "No"}</td>
               </tr>
             ))}
           </tbody>
         </CompactTable>
+        <div className="pagination-bar">
+          <span>
+            {pageStart.toLocaleString()}-{pageEnd.toLocaleString()} of{" "}
+            {totalMatches.toLocaleString()}
+          </span>
+          <div>
+            <button
+              type="button"
+              className="table-action"
+              disabled={!canPageBack}
+              onClick={() => refresh(Math.max(0, offset - limit))}
+            >
+              Prev
+            </button>
+            <button
+              type="button"
+              className="table-action"
+              disabled={!canPageForward}
+              onClick={() => refresh(offset + limit)}
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </ChartPanel>
     </section>
   );
@@ -1266,15 +1388,19 @@ function ArticleDistributionPanel({
 
   return (
     <ChartPanel
-      title="Article Pool"
-      meta={`Fresh since ${formatDate(distribution.fresh_cutoff)}`}
+      title="Filtered Current Pool"
+      meta={distributionMeta(distribution)}
     >
       <div className="quality-summary">
-        <MetricTile label="Pool articles" value={distribution.totals.total_count} />
-        <MetricTile label="Fresh" value={distribution.totals.fresh_count} />
-        <MetricTile label="Completed" value={distribution.totals.completed_count} />
+        <MetricTile label="Retained" value={distribution.totals.total_count} />
+        <MetricTile label="Published last 7d" value={distribution.totals.fresh_count} />
+        <MetricTile label="Summarized" value={distribution.totals.completed_count} />
         <MetricTile label="Pending" value={distribution.totals.pending_count} />
-        <MetricTile label="Failed" value={distribution.totals.failed_count} tone="bad" />
+        <MetricTile
+          label="Failed"
+          value={distribution.totals.failed_count}
+          tone={distribution.totals.failed_count > 0 ? "bad" : "neutral"}
+        />
         <MetricTile label="Images" value={distribution.totals.image_count} />
       </div>
       <div className="quality-diagnostics">
@@ -1351,9 +1477,11 @@ function ArticleDistributionPanel({
 function DistributionCompactGrid({
   title,
   items,
+  valueLabel = "ready",
 }: {
   title: string;
   items: { key: string; label: string; counts: DistributionCounts }[];
+  valueLabel?: string;
 }) {
   return (
     <div className="distribution-compact-grid">
@@ -1364,7 +1492,7 @@ function DistributionCompactGrid({
           <StatusCard
             key={item.key}
             label={item.label}
-            value={`${item.counts.completed_count} ready`}
+            value={`${item.counts.completed_count} ${valueLabel}`}
             tone={item.counts.completed_count > 0 ? "good" : "warn"}
           />
         ))}
@@ -1428,7 +1556,7 @@ function UsersPage({ api }: { api: Api }) {
     [selectedFeed],
   );
   const feedStats = useMemo(() => summarizeSelectedFeed(selectedFeed), [selectedFeed]);
-  const allFeedStats = useMemo(() => summarizeSelectedFeed(feed), [feed]);
+  const embeddingStats = useMemo(() => summarizeFeedEmbeddings(selectedFeed), [selectedFeed]);
   const userStats = useMemo(() => summarizeUsers(users), [users]);
 
   async function refreshUsers() {
@@ -1480,8 +1608,8 @@ function UsersPage({ api }: { api: Api }) {
         <div className="user-summary-grid">
           <MetricTile label="Beta users" value={users.length} />
           <MetricTile label="With interests" value={userStats.withInterests} />
-          <MetricTile label="Active users" value={userStats.active} />
-          <MetricTile label="Saved articles" value={userStats.saved} />
+          <MetricTile label="Ever active" value={userStats.active} />
+          <MetricTile label="All-time saves" value={userStats.saved} />
         </div>
         <ChartPanel title="Beta Users">
           <CompactTable className="users-table" minWidth={760}>
@@ -1489,7 +1617,7 @@ function UsersPage({ api }: { api: Api }) {
               <tr>
                 <th>Email</th>
                 <th>Interests</th>
-                <th>Signals</th>
+                <th>Views/Likes/Saves</th>
                 <th>Last active</th>
               </tr>
             </thead>
@@ -1509,7 +1637,7 @@ function UsersPage({ api }: { api: Api }) {
             </tbody>
           </CompactTable>
         </ChartPanel>
-        <ChartPanel title="Feed Inspector">
+        <ChartPanel title="User Feed Inspector">
           <div className="inspector">
             <div className="inspector-toolbar">
               <strong>{selectedUser?.email ?? "Select a user"}</strong>
@@ -1553,21 +1681,38 @@ function UsersPage({ api }: { api: Api }) {
                     </strong>
                   </div>
                   <div>
-                    <span>Loaded for user</span>
-                    <strong>{feed.length} cards across available editions</strong>
+                    <span>Loaded editions</span>
+                    <strong>{feed.length} cards total</strong>
                   </div>
                   <div>
-                    <span>Order</span>
-                    <strong>Stored rank; gaps can appear after rebuilds</strong>
+                    <span>Semantic profile</span>
+                    <strong>
+                      {selectedUser.has_embedding_profile ? "User embedding ready" : "No user embedding"}
+                    </strong>
                   </div>
                 </div>
                 <div className="feed-inspector-summary">
                   <MetricTile label="Selected cards" value={selectedFeed.length} />
-                  <MetricTile label="All loaded" value={feed.length} />
                   <MetricTile label="Unviewed" value={feedStats.unviewed} />
                   <MetricTile label="Viewed" value={feedStats.viewed} />
                   <MetricTile label="Saved" value={feedStats.saved} />
-                  <MetricTile label="All saved" value={allFeedStats.saved} />
+                  <MetricTile
+                    label="Duplicate titles"
+                    value={feedStats.duplicateTitles}
+                    tone={feedStats.duplicateTitles > 0 ? "warn" : "good"}
+                  />
+                  <MetricTile
+                    label="User embedding"
+                    valueText={selectedUser.has_embedding_profile ? "Ready" : "Missing"}
+                    tone={selectedUser.has_embedding_profile ? "good" : "warn"}
+                  />
+                  <MetricTile
+                    label="Article embeddings"
+                    valueText={`${embeddingStats.ready}/${embeddingStats.total}`}
+                    tone={
+                      embeddingStats.ready === embeddingStats.total ? "good" : "warn"
+                    }
+                  />
                 </div>
               </>
             ) : null}
@@ -1575,6 +1720,7 @@ function UsersPage({ api }: { api: Api }) {
               <div className="feed-composition">
                 <DistributionCompactGrid
                   title="Markets"
+                  valueLabel="cards"
                   items={feedComposition.countries.map((item) => ({
                     key: item.key,
                     label: countryLabel(item.key),
@@ -1583,6 +1729,7 @@ function UsersPage({ api }: { api: Api }) {
                 />
                 <DistributionCompactGrid
                   title="Categories"
+                  valueLabel="cards"
                   items={feedComposition.categories.map((item) => ({
                     key: item.key,
                     label: titleCase(item.key),
@@ -1591,6 +1738,7 @@ function UsersPage({ api }: { api: Api }) {
                 />
                 <DistributionCompactGrid
                   title="Reasons"
+                  valueLabel="cards"
                   items={feedComposition.reasons.map((item) => ({
                     key: item.key,
                     label: rankingReasonLabel(item.key),
@@ -1599,13 +1747,14 @@ function UsersPage({ api }: { api: Api }) {
                 />
               </div>
             ) : null}
-            <CompactTable className="feed-table" minWidth={1040}>
+            <CompactTable className="feed-table" minWidth={1120}>
               <thead>
                 <tr>
                   <th>Stored rank</th>
                   <th>Market</th>
                   <th>Category</th>
                   <th>Title</th>
+                  <th>Embedding</th>
                   <th>Reason</th>
                   <th>Score</th>
                   <th>State</th>
@@ -1614,14 +1763,14 @@ function UsersPage({ api }: { api: Api }) {
               <tbody>
                 {selectedUser && !selectedFeedLoading && selectedFeed.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="empty-table-cell">
+                    <td colSpan={8} className="empty-table-cell">
                       No cards for this edition and timezone.
                     </td>
                   </tr>
                 ) : null}
                 {!selectedUser ? (
                   <tr>
-                    <td colSpan={7} className="empty-table-cell">
+                    <td colSpan={8} className="empty-table-cell">
                       Select a beta user to inspect their feed.
                     </td>
                   </tr>
@@ -1634,6 +1783,7 @@ function UsersPage({ api }: { api: Api }) {
                     <td>{countryLabel(item.country)}</td>
                     <td>{titleCase(item.category)}</td>
                     <td className="title-cell">{item.title}</td>
+                    <td>{item.article_has_embedding ? "Ready" : "Missing"}</td>
                     <td>{rankingReasonLabel(item.ranking_reason)}</td>
                     <td>{item.score.toFixed(2)}</td>
                     <td>{feedStateLabel(item)}</td>
@@ -1849,16 +1999,25 @@ function ActionButton({
 function MetricTile({
   label,
   value,
+  valueText,
+  suffix,
+  className = "",
   tone = "neutral",
 }: {
   label: string;
-  value: number;
+  value?: number;
+  valueText?: string;
+  suffix?: string;
+  className?: string;
   tone?: Tone;
 }) {
   return (
-    <div className={`metric-tile ${tone}`}>
+    <div className={`metric-tile ${tone} ${className}`.trim()}>
       <span>{label}</span>
-      <strong>{value.toLocaleString()}</strong>
+      <strong>
+        {valueText ?? value?.toLocaleString() ?? "-"}
+        {suffix ? <small>{suffix}</small> : null}
+      </strong>
     </div>
   );
 }
@@ -1884,15 +2043,17 @@ function ChartPanel({
   title,
   subtitle,
   meta,
+  className = "",
   children,
 }: {
   title: string;
   subtitle?: string;
   meta?: string;
+  className?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section className="chart-panel">
+    <section className={`chart-panel ${className}`.trim()}>
       <div className="chart-panel-header">
         <div>
           <h3>{title}</h3>
@@ -2024,10 +2185,19 @@ function summarizeFeedComposition(feed: FeedItem[]) {
 }
 
 function summarizeSelectedFeed(feed: FeedItem[]) {
+  const titleCounts = countBy(feed, (item) => item.title.trim().toLowerCase());
   return {
     viewed: feed.filter((item) => item.is_viewed).length,
     unviewed: feed.filter((item) => !item.is_viewed).length,
     saved: feed.filter((item) => item.saved).length,
+    duplicateTitles: titleCounts.filter((item) => item.count > 1).length,
+  };
+}
+
+function summarizeFeedEmbeddings(feed: FeedItem[]) {
+  return {
+    ready: feed.filter((item) => item.article_has_embedding).length,
+    total: feed.length,
   };
 }
 
@@ -2043,6 +2213,15 @@ function buildQualityDiagnostics(distribution: ArticleDistribution) {
   const total = distribution.totals.total_count;
   const completed = distribution.totals.completed_count;
   const imageCount = distribution.totals.image_count;
+  if (total === 0) {
+    return [
+      {
+        label: "Article supply",
+        value: "No articles match these filters",
+        tone: "warn" as Tone,
+      },
+    ];
+  }
   const diagnostics: { label: string; value: React.ReactNode; tone: Tone }[] = [
     {
       label: "Ready summaries",
@@ -2080,10 +2259,10 @@ function buildQualityDiagnostics(distribution: ArticleDistribution) {
     (item) => item.completed_count > 0 && item.completed_count < 20,
   );
   diagnostics.push({
-    label: "Thin coverage",
+    label: "Thin buckets (<20)",
     value:
       thinBuckets.length === 0
-        ? "Priority buckets have depth"
+        ? "All buckets have depth"
         : (
           <LineList
             items={thinBuckets
@@ -2100,6 +2279,23 @@ function buildQualityDiagnostics(distribution: ArticleDistribution) {
   return diagnostics;
 }
 
+function distributionScopeLabel(distribution: ArticleDistribution) {
+  const filters = distribution.filters;
+  if (filters.fresh_only) return "Published last 7d";
+  if (filters.date_field === "fetched") return "Fetched date filter";
+  if (filters.date_field === "published" && filters.date_from) {
+    return "Published date filter";
+  }
+  return "Current retained pool";
+}
+
+function distributionMeta(distribution: ArticleDistribution) {
+  const label = distributionScopeLabel(distribution);
+  return distribution.filters.fresh_only
+    ? `${label} · Since ${formatDate(distribution.fresh_cutoff)}`
+    : label;
+}
+
 function LineList({ items }: { items: string[] }) {
   return (
     <span className="line-list">
@@ -2112,7 +2308,7 @@ function LineList({ items }: { items: string[] }) {
 
 function importantCoverageBuckets(distribution: ArticleDistribution) {
   const countries = distribution.by_country.map((item) => item.country);
-  const categories = NEWS_CATEGORIES.filter((category) => category !== "general");
+  const categories = NEWS_CATEGORIES;
   return countries.flatMap((country) =>
     categories.map((category) => {
       const bucket = distribution.by_country_category.find(
@@ -2147,20 +2343,43 @@ function feedStateLabel(item: FeedItem) {
   return states.join(" · ");
 }
 
+function articleSignalSummary(article: Article) {
+  const pieces = [
+    article.viewed_count > 0 ? `${article.viewed_count} viewed` : null,
+    article.liked_count > 0 ? `${article.liked_count} liked` : null,
+    article.disliked_count > 0 ? `${article.disliked_count} disliked` : null,
+    article.saved_count > 0 ? `${article.saved_count} saved` : null,
+  ].filter(Boolean);
+  return pieces.length ? pieces.join(" · ") : "-";
+}
+
 function appendDateScope(
   params: URLSearchParams,
-  scope: "today" | "all" | "custom",
+  scope: DateScope,
   dateFrom: string,
   dateTo: string,
   marketTimezone: string,
 ) {
+  if (scope === "fresh") {
+    params.set("fresh_only", "true");
+    return;
+  }
   if (scope === "all") return;
   if (scope === "today") {
     const today = todayDateInput(marketTimezone);
+    params.set("date_field", "published");
     params.set("date_from", today);
     params.set("date_to", today);
     return;
   }
+  if (scope === "fetched_today") {
+    const today = todayDateInput(marketTimezone);
+    params.set("date_field", "fetched");
+    params.set("date_from", today);
+    params.set("date_to", today);
+    return;
+  }
+  params.set("date_field", "published");
   if (dateFrom) params.set("date_from", dateFrom);
   if (dateTo) params.set("date_to", dateTo);
 }
@@ -2202,7 +2421,6 @@ function buildHomeWarnings(
   overview: Overview,
   latestRun: PipelineRun | null,
   distribution: ArticleDistribution | null,
-  schedules: Schedule[],
 ) {
   const warnings: { label: string; value: string; tone: Tone }[] = [];
   if (latestRun?.status === "failed") {
@@ -2226,17 +2444,25 @@ function buildHomeWarnings(
       tone: "warn",
     });
   }
-  if (overview.fresh_articles < overview.newsapi_daily_target) {
+  if (overview.completed_summaries < overview.newsapi_daily_target) {
     warnings.push({
-      label: "Freshness",
-      value: `${overview.fresh_articles.toLocaleString()} fresh articles versus ${overview.newsapi_daily_target.toLocaleString()} target.`,
+      label: "Current pool",
+      value: `${overview.completed_summaries.toLocaleString()} summarized articles versus ${overview.newsapi_daily_target.toLocaleString()} target.`,
       tone: "warn",
     });
   }
-  if (!overview.next_scheduled_run_at || schedules.length === 0) {
+  if (overview.openai_embedding_calls_planned > 0) {
     warnings.push({
-      label: "Scheduler",
-      value: "No next scheduled run is visible.",
+      label: "Embeddings",
+      value: `${overview.openai_embedding_calls_planned.toLocaleString()} summarized articles are missing embeddings.`,
+      tone: "warn",
+    });
+  }
+  const usersMissingInterests = overview.total_users - overview.users_with_interests;
+  if (usersMissingInterests > 0) {
+    warnings.push({
+      label: "User setup",
+      value: `${usersMissingInterests.toLocaleString()} beta users have not selected interests.`,
       tone: "warn",
     });
   }
@@ -2244,24 +2470,20 @@ function buildHomeWarnings(
     const missingMarkets = distribution.by_country.filter(
       (item) => item.completed_count === 0,
     );
-    for (const item of missingMarkets) {
+    if (missingMarkets.length > 0) {
       warnings.push({
-        label: `${countryLabel(item.country)} market`,
-        value: "No ready articles in this market.",
+        label: "Markets",
+        value: `${missingMarkets.length.toLocaleString()} markets have no summarized articles.`,
         tone: "bad",
       });
     }
-    const missingIntersections = distribution.by_country_category.filter(
-      (item) =>
-        ["sports", "entertainment", "technology", "business"].includes(
-          item.category,
-        ) && item.completed_count === 0,
+    const missingBuckets = importantCoverageBuckets(distribution).filter(
+      (item) => item.completed_count === 0,
     );
-    if (missingIntersections.length > 0) {
-      const first = missingIntersections[0];
+    if (missingBuckets.length > 0) {
       warnings.push({
-        label: "Coverage gap",
-        value: `${countryLabel(first.country)} ${titleCase(first.category)} has 0 ready articles.`,
+        label: "Coverage gaps",
+        value: `${missingBuckets.length.toLocaleString()} priority gaps.`,
         tone: "warn",
       });
     }
@@ -2279,13 +2501,34 @@ function buildHomeWarnings(
         tone: "good",
       },
       {
-        label: "Scheduling",
+        label: "Users",
         value: "Healthy",
         tone: "good",
       },
     );
   }
   return warnings.slice(0, 5);
+}
+
+function buildCoverageSummary(distribution: ArticleDistribution | null) {
+  if (!distribution) {
+    return [{ label: "Markets", value: "-", tone: "warn" as Tone }];
+  }
+  const zeroBuckets = importantCoverageBuckets(distribution).filter(
+    (item) => item.completed_count === 0,
+  );
+  return [
+    ...distribution.by_country.map((item) => ({
+      label: countryLabel(item.country),
+      value: `${item.completed_count.toLocaleString()} summarized`,
+      tone: item.completed_count > 0 ? ("good" as Tone) : ("bad" as Tone),
+    })),
+    {
+      label: "Priority gaps",
+      value: zeroBuckets.length === 0 ? "None" : zeroBuckets.length.toLocaleString(),
+      tone: zeroBuckets.length === 0 ? ("good" as Tone) : ("warn" as Tone),
+    },
+  ];
 }
 
 function buildEditionReadiness(schedules: Schedule[]) {
@@ -2417,7 +2660,7 @@ function describeRunOptions(metadata: Record<string, unknown>) {
     options && typeof options === "object" ? (options as Record<string, unknown>) : {};
   const pieces = [
     optionMap.edition_type ? editionLabel(String(optionMap.edition_type)) : null,
-    optionMap.market_timezone ? String(optionMap.market_timezone) : null,
+    optionMap.market_timezone ? timezoneLabel(String(optionMap.market_timezone)) : null,
     optionMap.feed_date ? String(optionMap.feed_date) : null,
     optionMap.run_ingestion_first ? "fetch first" : null,
     optionMap.summarize_first ? "summarize first" : null,
@@ -2437,7 +2680,7 @@ function describeCountryBreakdown(byCountry: Record<string, unknown>) {
     .map(([country, value]) => {
       if (!value || typeof value !== "object") return null;
       const counts = value as Record<string, unknown>;
-      return `${country.toUpperCase()}: ${counts.fetched ?? 0} fetched, ${
+      return `${countryLabel(country)}: ${counts.fetched ?? 0} fetched, ${
         counts.inserted ?? 0
       } inserted`;
     })
@@ -2445,20 +2688,25 @@ function describeCountryBreakdown(byCountry: Record<string, unknown>) {
     .join(" · ");
 }
 
-function describeFetchInsertBreakdown(metadata: Record<string, unknown> | null) {
-  if (!metadata) return "-";
+function describeFetchInsertBreakdown(
+  metadata: Record<string, unknown> | null,
+  labelForKey: (key: string) => string,
+) {
+  if (!metadata) return [];
   const pieces = Object.entries(metadata)
     .map(([key, value]) => {
       if (!value || typeof value !== "object") return null;
       const counts = value as Record<string, unknown>;
-      return `${titleCase(key)} ${counts.fetched ?? 0}/${counts.inserted ?? 0}`;
+      return `${labelForKey(key)}: ${Number(
+        counts.fetched ?? 0,
+      ).toLocaleString()} fetched, ${Number(counts.inserted ?? 0).toLocaleString()} inserted`;
     })
     .filter(Boolean);
-  return pieces.length ? pieces.join(" · ") : "-";
+  return pieces as string[];
 }
 
 function describeNestedFetchInsertBreakdown(metadata: Record<string, unknown> | null) {
-  if (!metadata) return "-";
+  if (!metadata) return [];
   const pieces = Object.entries(metadata).flatMap(([country, categories]) => {
     if (!categories || typeof categories !== "object") return [];
     return Object.entries(categories as Record<string, unknown>)
@@ -2468,11 +2716,11 @@ function describeNestedFetchInsertBreakdown(metadata: Record<string, unknown> | 
         const fetched = Number(counts.fetched ?? 0);
         const inserted = Number(counts.inserted ?? 0);
         if (fetched === 0 && inserted === 0) return null;
-        return `${countryLabel(country)} ${titleCase(category)} ${fetched}/${inserted}`;
+        return `${countryLabel(country)} ${titleCase(category)}: ${fetched.toLocaleString()} fetched, ${inserted.toLocaleString()} inserted`;
       })
       .filter(Boolean);
   });
-  return pieces.length ? pieces.join(" · ") : "-";
+  return pieces as string[];
 }
 
 function objectValue(value: unknown): Record<string, unknown> | null {
@@ -2484,6 +2732,18 @@ function runSourceLabel(run: PipelineRun) {
   if (source === "scheduled") return "Scheduled";
   if (source === "task") return "Task";
   return "Dashboard";
+}
+
+function runPrunedCount(run: PipelineRun) {
+  const ingestion = objectValue(run.metadata_json.ingestion);
+  if (!ingestion || ingestion.pruned === undefined || ingestion.pruned === null) {
+    return null;
+  }
+  return Number(ingestion.pruned);
+}
+
+function formatOptionalNumber(value: number | null) {
+  return value === null || Number.isNaN(value) ? "-" : value.toLocaleString();
 }
 
 function articleDistributionValue(value: unknown): ArticleDistribution | null {
@@ -2498,6 +2758,15 @@ function articleDistributionValue(value: unknown): ArticleDistribution | null {
 function formatDate(value: string | null) {
   if (!value) return "-";
   return new Date(value).toLocaleString();
+}
+
+function formatDateShort(value: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "-";
+  const day = date.toLocaleDateString([], { month: "short", day: "numeric" });
+  const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${day}, ${time}`;
 }
 
 function pad(value: number) {

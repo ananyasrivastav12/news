@@ -167,6 +167,7 @@ def seed_demo_feed(
             db.add(
                 db_model.Summary(
                     article_id=article.id,
+                    display_headline=payload["title"],
                     main_takeaway=payload["takeaway"],
                     supporting_lines=payload["supporting"],
                     summary_text=" ".join(
@@ -175,6 +176,7 @@ def seed_demo_feed(
                             *cast(list[str], payload["supporting"]),
                         ]
                     ),
+                    why_it_matters=None,
                     model_name="local-demo",
                 )
             )

@@ -16,8 +16,9 @@ def build_article_distribution(
     *,
     fresh_only: bool = False,
     summary_status: db_model.SummaryStatus | None = None,
-    published_from: datetime | None = None,
-    published_to: datetime | None = None,
+    date_field: str = "published",
+    date_from: datetime | None = None,
+    date_to: datetime | None = None,
 ) -> dict[str, Any]:
     fresh_cutoff = datetime.now(timezone.utc) - timedelta(
         hours=settings.ARTICLE_MAX_AGE_HOURS
@@ -29,10 +30,15 @@ def build_article_distribution(
         base_query = base_query.filter(
             db_model.Article.summary_status == summary_status
         )
-    if published_from is not None:
-        base_query = base_query.filter(db_model.Article.published_at >= published_from)
-    if published_to is not None:
-        base_query = base_query.filter(db_model.Article.published_at < published_to)
+    date_column = (
+        db_model.Article.fetched_at
+        if date_field == "fetched"
+        else db_model.Article.published_at
+    )
+    if date_from is not None:
+        base_query = base_query.filter(date_column >= date_from)
+    if date_to is not None:
+        base_query = base_query.filter(date_column < date_to)
 
     totals = _counts_for_query(base_query, fresh_cutoff)
     return {
@@ -41,8 +47,9 @@ def build_article_distribution(
         "filters": {
             "fresh_only": fresh_only,
             "summary_status": summary_status.value if summary_status else None,
-            "date_from": published_from.isoformat() if published_from else None,
-            "date_to": published_to.isoformat() if published_to else None,
+            "date_field": date_field,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
         },
         "totals": totals,
         "by_country": _grouped_counts(
