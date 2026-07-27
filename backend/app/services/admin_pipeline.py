@@ -17,6 +17,7 @@ from app.services.feed_editions import (
     normalize_timezone,
     validate_edition_type,
 )
+from app.services.metadata import json_safe
 from app.tasks.news_fetching import (
     _async_ingest_news,
     _async_summarize_articles,
@@ -38,7 +39,7 @@ def create_pipeline_run(
     pipeline_run = db_model.PipelineRun(
         run_type=run_type,
         status=db_model.PipelineRunStatus.QUEUED,
-        metadata_json=metadata or {},
+        metadata_json=json_safe(metadata or {}),
     )
     db.add(pipeline_run)
     db.commit()
@@ -149,7 +150,7 @@ def run_pipeline_now(
         pipeline_run.status = db_model.PipelineRunStatus.SUCCEEDED
         pipeline_run.finished_at = finished_at
         pipeline_run.duration_seconds = (finished_at - started_at).total_seconds()
-        pipeline_run.metadata_json = metadata
+        pipeline_run.metadata_json = json_safe(metadata)
         db.commit()
         add_pipeline_log(
             db,
@@ -162,7 +163,7 @@ def run_pipeline_now(
         pipeline_run.finished_at = finished_at
         pipeline_run.duration_seconds = (finished_at - started_at).total_seconds()
         pipeline_run.error_message = str(exc)
-        pipeline_run.metadata_json = metadata
+        pipeline_run.metadata_json = json_safe(metadata)
         db.commit()
         add_pipeline_log(
             db,

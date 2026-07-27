@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MORNING_BRIEF = "morning_brief"
@@ -80,12 +80,15 @@ def latest_expected_edition_type(now: datetime) -> str:
     return expected[-1] if expected else DAILY_DIGEST
 
 
-def is_edition_due(now: datetime, edition_type: str) -> bool:
+def is_edition_due(
+    now: datetime, edition_type: str, dispatch_window_minutes: int = 15
+) -> bool:
     definition = EDITION_BY_TYPE[edition_type]
-    return (
-        now.hour == definition.publish_time.hour
-        and now.minute == definition.publish_time.minute
+    publish_at = datetime.combine(
+        now.date(), definition.publish_time, tzinfo=now.tzinfo
     )
+    dispatch_window = timedelta(minutes=max(1, dispatch_window_minutes))
+    return publish_at <= now < publish_at + dispatch_window
 
 
 def validate_edition_type(value: str) -> str:

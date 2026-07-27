@@ -1,6 +1,6 @@
 # Personalized News Summarizer
 
-Personalized News Summarizer is a beta-ready news pipeline and mobile reader. The backend ingests headlines, deduplicates and summarizes articles, builds personalized 100-card feeds, and logs user interactions for later ranking work. A private admin dashboard controls pipeline runs, and an Expo app gives testers an email/password beta flow.
+Personalized News Summarizer is a beta-ready news pipeline and mobile reader. The backend ingests headlines, deduplicates and summarizes articles, builds personalized 50-card feed editions, and logs user interactions for later ranking work. A private admin dashboard controls pipeline runs, and an Expo app gives testers an email/password beta flow.
 
 ## Architecture
 
@@ -110,7 +110,7 @@ Google login is disabled unless public Google OAuth client IDs are configured. E
 1. Tester fills a Google Form with name, email, platform, country, interests, and consent for usage signal collection.
 2. Operator creates credentials through `/api/users/` or a small CSV/script workflow.
 3. Operator emails the install link, email, password, known limitations, feedback form, and privacy note.
-4. Tester logs in, picks interests, receives up to `FEED_SIZE=100` personalized cards, and uses the app.
+4. Tester logs in, picks interests, receives up to 50 personalized cards per edition, and uses the app.
 5. Interactions are stored for later ranking analysis.
 
 CSV format for manual beta account creation:
@@ -141,7 +141,8 @@ Beta defaults are intentionally bounded:
 - `NEWS_API_PAGE_SIZE=100`
 - `NEWS_DAILY_ARTICLE_TARGET=250`
 - `ARTICLE_POOL_LIMIT=1000`
-- `FEED_SIZE=100`
+- `FEED_SIZE=50`
+- `FEED_EDITION_SIZE=50`
 - `MAX_FEED_ITEMS=500`
 - `OPENAI_DAILY_SUMMARY_LIMIT=250`
 

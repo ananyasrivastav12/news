@@ -27,6 +27,8 @@ type Overview = {
   openai_daily_summary_limit: number;
   openai_embedding_calls_planned: number;
   last_successful_run_at: string | null;
+  latest_article_fetched_at: string | null;
+  latest_article_processed_at: string | null;
   next_scheduled_run_at: string | null;
 };
 
@@ -361,7 +363,7 @@ function HomePage({ api }: { api: Api }) {
       .finally(() => setLoading(false));
   }, [api]);
 
-  if (loading) return <PageTitle title="Home" subtitle="Loading..." />;
+  if (loading) return <PageTitle title="Home" />;
   if (!overview) return <EmptyState message="Overview could not be loaded." />;
 
   const latestRun = runs[0] ?? null;
@@ -380,8 +382,8 @@ function HomePage({ api }: { api: Api }) {
   const readiness = buildEditionReadiness(schedules);
 
   return (
-    <section>
-      <PageTitle title="Home" subtitle="Readiness, freshness, and system health." />
+    <section className="home-page">
+      <PageTitle title="Home" />
       <div className={`home-hero ${healthTone}`}>
         <div>
           <span className="eyebrow">Current State</span>
@@ -464,11 +466,11 @@ function HomePage({ api }: { api: Api }) {
               ))}
             </div>
           </ChartPanel>
-          <ChartPanel title="Last Pipeline" subtitle="Most recent backend run.">
+          <ChartPanel title="Backend Activity">
             {latestRun ? (
               <div className="pipeline-summary">
                 <StatusCard
-                  label={`Run #${latestRun.id}`}
+                  label={`Admin run #${latestRun.id}`}
                   value={latestRun.run_type}
                   tone={latestRun.status === "succeeded" ? "good" : "bad"}
                 />
@@ -486,9 +488,19 @@ function HomePage({ api }: { api: Api }) {
                   value={latestRun.summarized_count.toLocaleString()}
                 />
                 <StatusCard
-                  label="Last success"
+                  label="Last admin success"
                   value={formatDate(overview.last_successful_run_at)}
                   tone={overview.last_successful_run_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Latest article fetch"
+                  value={formatDate(overview.latest_article_fetched_at)}
+                  tone={overview.latest_article_fetched_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Latest summary/update"
+                  value={formatDate(overview.latest_article_processed_at)}
+                  tone={overview.latest_article_processed_at ? "good" : "warn"}
                 />
                 <StatusCard
                   label="Next scheduled"
@@ -499,9 +511,19 @@ function HomePage({ api }: { api: Api }) {
             ) : (
               <div className="pipeline-summary">
                 <StatusCard
-                  label="Last success"
+                  label="Last admin success"
                   value={formatDate(overview.last_successful_run_at)}
                   tone={overview.last_successful_run_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Latest article fetch"
+                  value={formatDate(overview.latest_article_fetched_at)}
+                  tone={overview.latest_article_fetched_at ? "good" : "warn"}
+                />
+                <StatusCard
+                  label="Latest summary/update"
+                  value={formatDate(overview.latest_article_processed_at)}
+                  tone={overview.latest_article_processed_at ? "good" : "warn"}
                 />
                 <StatusCard
                   label="Next scheduled"
@@ -705,6 +727,7 @@ function PipelineRunsSection({
           <thead>
             <tr>
               <th>ID</th>
+              <th>Source</th>
               <th>Type</th>
               <th>Status</th>
               <th>Finished</th>
@@ -718,7 +741,7 @@ function PipelineRunsSection({
           <tbody>
             {!loading && runs.length === 0 ? (
               <tr>
-                <td colSpan={9} className="empty-table-cell">
+                <td colSpan={10} className="empty-table-cell">
                   No pipeline runs yet.
                 </td>
               </tr>
@@ -732,6 +755,7 @@ function PipelineRunsSection({
                 <React.Fragment key={run.id}>
                   <tr>
                     <td>{run.id}</td>
+                    <td>{runSourceLabel(run)}</td>
                     <td>{run.run_type}</td>
                     <td><Badge value={run.status} /></td>
                     <td>{formatDate(run.finished_at)}</td>
@@ -813,7 +837,7 @@ function RunDetails({ run }: { run: PipelineRun }) {
   }
   return (
     <tr className="run-details-row">
-      <td colSpan={9}>
+      <td colSpan={10}>
         <div className="run-details">
           {ingestion ? (
             <div className="run-detail-block">
@@ -2453,6 +2477,13 @@ function describeNestedFetchInsertBreakdown(metadata: Record<string, unknown> | 
 
 function objectValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function runSourceLabel(run: PipelineRun) {
+  const source = run.metadata_json.source;
+  if (source === "scheduled") return "Scheduled";
+  if (source === "task") return "Task";
+  return "Dashboard";
 }
 
 function articleDistributionValue(value: unknown): ArticleDistribution | null {

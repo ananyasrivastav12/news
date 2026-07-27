@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.crud import interest as crud_interest
 from app.db import model as db_model
 from app.db.session import SessionLocal
+from app.services.admin_observability import build_article_distribution
 from app.services.article_pipeline import (
     is_duplicate_article,
     is_valid_article,
@@ -32,6 +33,7 @@ from app.services.feed_editions import (
     normalize_timezone,
     validate_edition_type,
 )
+from app.services.metadata import json_safe
 from app.services.news import NewsApiService
 from app.services.recommendations import build_today_feed
 from app.services.summarizer import ArticleSummarizer
@@ -328,28 +330,189 @@ def _build_user_feed(
     )
 
 
+def _status_value(status: db_model.PipelineRunStatus | str) -> str:
+    return status.value if isinstance(status, db_model.PipelineRunStatus) else status
+
+
+def _start_recorded_run(
+    db: Session,
+    *,
+    run_type: str,
+    metadata: dict[str, Any] | None = None,
+) -> db_model.PipelineRun:
+    pipeline_run = db_model.PipelineRun(
+        run_type=run_type,
+        status=db_model.PipelineRunStatus.RUNNING,
+        started_at=datetime.now(timezone.utc),
+        metadata_json=json_safe(metadata or {}),
+    )
+    db.add(pipeline_run)
+    db.flush()
+    db.add(
+        db_model.PipelineRunLog(
+            pipeline_run_id=pipeline_run.id,
+            level="info",
+            message=f"Started {run_type.replace('_', ' ')}.",
+        )
+    )
+    db.commit()
+    db.refresh(pipeline_run)
+    return pipeline_run
+
+
+def _finish_recorded_run(
+    db: Session,
+    pipeline_run: db_model.PipelineRun,
+    *,
+    metadata: dict[str, Any],
+    ingestion: dict[str, Any] | None = None,
+    summarization: dict[str, Any] | None = None,
+    feeds: dict[str, Any] | None = None,
+    embeddings: dict[str, Any] | None = None,
+) -> None:
+    if ingestion is not None:
+        pipeline_run.fetched_count += int(ingestion.get("fetched", 0))
+        pipeline_run.inserted_count += int(ingestion.get("inserted", 0))
+        metadata["ingestion"] = ingestion
+    if summarization is not None:
+        pipeline_run.summarized_count += int(summarization.get("processed", 0))
+        pipeline_run.summary_failed_count += int(summarization.get("failed", 0))
+        metadata["summarization"] = summarization
+    if feeds is not None:
+        pipeline_run.feed_items_count += int(feeds.get("feed_items", 0))
+        metadata["feeds"] = feeds
+    if embeddings is not None:
+        pipeline_run.embedded_count += int(embeddings.get("embedded", 0))
+        metadata["embeddings"] = embeddings
+    metadata["article_distribution"] = build_article_distribution(db)
+
+    finished_at = datetime.now(timezone.utc)
+    pipeline_run.status = db_model.PipelineRunStatus.SUCCEEDED
+    pipeline_run.finished_at = finished_at
+    if pipeline_run.started_at is not None:
+        pipeline_run.duration_seconds = _duration_seconds(
+            pipeline_run.started_at, finished_at
+        )
+    pipeline_run.metadata_json = json_safe(metadata)
+    db.add(
+        db_model.PipelineRunLog(
+            pipeline_run_id=pipeline_run.id,
+            level="info",
+            message=f"Finished {pipeline_run.run_type.replace('_', ' ')}.",
+        )
+    )
+    db.commit()
+
+
+def _fail_recorded_run(
+    db: Session,
+    pipeline_run: db_model.PipelineRun,
+    *,
+    metadata: dict[str, Any],
+    error: Exception,
+) -> None:
+    finished_at = datetime.now(timezone.utc)
+    pipeline_run.status = db_model.PipelineRunStatus.FAILED
+    pipeline_run.finished_at = finished_at
+    if pipeline_run.started_at is not None:
+        pipeline_run.duration_seconds = _duration_seconds(
+            pipeline_run.started_at, finished_at
+        )
+    pipeline_run.error_message = str(error)
+    pipeline_run.metadata_json = json_safe(metadata)
+    db.add(
+        db_model.PipelineRunLog(
+            pipeline_run_id=pipeline_run.id,
+            level="error",
+            message=str(error),
+        )
+    )
+    db.commit()
+
+
+def _recorded_result(
+    pipeline_run: db_model.PipelineRun,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        **payload,
+        "pipeline_run_id": pipeline_run.id,
+        "pipeline_run_status": _status_value(pipeline_run.status),
+    }
+
+
+def _duration_seconds(started_at: datetime, finished_at: datetime) -> float:
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return (finished_at - started_at.astimezone(timezone.utc)).total_seconds()
+
+
 @celery.task
-def fetch_news_task() -> dict[str, Any]:
+def fetch_news_task(record_run: bool = True) -> dict[str, Any]:
     db = SessionLocal()
+    metadata = {"source": "task", "task": "fetch_news_task"}
+    pipeline_run = (
+        _start_recorded_run(db, run_type="ingestion", metadata=metadata)
+        if record_run
+        else None
+    )
     try:
-        return asyncio.run(_async_ingest_news(db))
+        result = asyncio.run(_async_ingest_news(db))
+        if pipeline_run is not None:
+            _finish_recorded_run(
+                db,
+                pipeline_run,
+                metadata=metadata,
+                ingestion=result,
+            )
+            return _recorded_result(pipeline_run, result)
+        return result
+    except Exception as exc:
+        if pipeline_run is not None:
+            _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 
 
 @celery.task
 def summarize_articles_task(
-    limit: int | None = None, force_refresh: bool = False
-) -> dict[str, int]:
+    limit: int | None = None, force_refresh: bool = False, record_run: bool = True
+) -> dict[str, Any]:
     db = SessionLocal()
+    summary_limit = max(1, limit or settings.OPENAI_DAILY_SUMMARY_LIMIT)
+    metadata = {
+        "source": "task",
+        "task": "summarize_articles_task",
+        "limit": summary_limit,
+        "force_refresh": force_refresh,
+    }
+    pipeline_run = (
+        _start_recorded_run(db, run_type="summarization", metadata=metadata)
+        if record_run
+        else None
+    )
     try:
-        return asyncio.run(
+        result = asyncio.run(
             _async_summarize_articles(
                 db,
-                limit=max(1, limit or settings.OPENAI_DAILY_SUMMARY_LIMIT),
+                limit=summary_limit,
                 force_refresh=force_refresh,
             )
         )
+        if pipeline_run is not None:
+            _finish_recorded_run(
+                db,
+                pipeline_run,
+                metadata=metadata,
+                summarization=result,
+            )
+            return _recorded_result(pipeline_run, result)
+        return result
+    except Exception as exc:
+        if pipeline_run is not None:
+            _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 
@@ -360,7 +523,7 @@ def generate_morning_feeds_task(
     force_refresh: bool = False,
     summarize_first: bool = False,
     summary_limit: int = 100,
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     return generate_feed_edition_task(
         feed_date_iso=feed_date_iso,
         edition_type=MORNING_BRIEF,
@@ -379,8 +542,21 @@ def generate_feed_edition_task(
     force_refresh: bool = False,
     summarize_first: bool = False,
     summary_limit: int = 100,
-) -> dict[str, int | str]:
+) -> dict[str, Any]:
     db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "task",
+        "task": "generate_feed_edition_task",
+        "edition_type": edition_type,
+        "feed_date": feed_date_iso,
+        "market_timezone": market_timezone,
+        "force_refresh": force_refresh,
+        "summarize_first": summarize_first,
+        "summary_limit": summary_limit,
+    }
+    pipeline_run = _start_recorded_run(
+        db, run_type="feed_generation", metadata=metadata
+    )
     try:
         validate_edition_type(edition_type)
         market_timezone = normalize_timezone(market_timezone)
@@ -424,7 +600,7 @@ def generate_feed_edition_task(
                 market_timezone=market_timezone,
                 force_refresh=force_refresh,
             )
-        result: dict[str, int | str] = {
+        result: dict[str, Any] = {
             "users": len(users),
             "feed_items": feed_count,
             "edition_type": edition_type,
@@ -434,23 +610,63 @@ def generate_feed_edition_task(
         if summarization is not None:
             result["summarized"] = summarization["processed"]
             result["summary_failures"] = summarization["failed"]
-        return result
+        _finish_recorded_run(
+            db,
+            pipeline_run,
+            metadata=metadata,
+            summarization=summarization,
+            feeds=result,
+        )
+        return _recorded_result(pipeline_run, result)
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 
 
 @celery.task
 def run_daily_pipeline_task() -> dict[str, object]:
-    ingestion = fetch_news_task()
-    summarization = summarize_articles_task()
-    return {
-        "ingestion": ingestion,
-        "summarization": summarization,
-        "feeds": {
+    db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "task",
+        "task": "run_daily_pipeline_task",
+    }
+    pipeline_run = _start_recorded_run(db, run_type="full_pipeline", metadata=metadata)
+    try:
+        ingestion = asyncio.run(_async_ingest_news(db))
+        summarization = asyncio.run(
+            _async_summarize_articles(
+                db,
+                limit=max(1, settings.OPENAI_DAILY_SUMMARY_LIMIT),
+                force_refresh=False,
+            )
+        )
+        feeds = {
             "skipped": True,
             "reason": "Feeds are ranked lazily per user when the app loads.",
-        },
-    }
+        }
+        _finish_recorded_run(
+            db,
+            pipeline_run,
+            metadata=metadata,
+            ingestion=ingestion,
+            summarization=summarization,
+            feeds=feeds,
+        )
+        return _recorded_result(
+            pipeline_run,
+            {
+                "ingestion": ingestion,
+                "summarization": summarization,
+                "feeds": feeds,
+            },
+        )
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
+    finally:
+        db.close()
 
 
 @celery.task
@@ -462,19 +678,55 @@ def run_edition_pipeline_task(
 ) -> dict[str, object]:
     validate_edition_type(edition_type)
     market_timezone = normalize_timezone(market_timezone)
-    ingestion = fetch_news_task()
-    summarization = summarize_articles_task()
-    return {
-        "ingestion": ingestion,
-        "summarization": summarization,
-        "feeds": {
+    db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "scheduled",
+        "task": "run_edition_pipeline_task",
+        "edition_type": edition_type,
+        "market_timezone": market_timezone,
+        "feed_date": feed_date_iso,
+        "force_refresh": force_refresh,
+    }
+    pipeline_run = _start_recorded_run(
+        db, run_type="scheduled_edition_pipeline", metadata=metadata
+    )
+    try:
+        ingestion = asyncio.run(_async_ingest_news(db))
+        summarization = asyncio.run(
+            _async_summarize_articles(
+                db,
+                limit=max(1, settings.OPENAI_DAILY_SUMMARY_LIMIT),
+                force_refresh=False,
+            )
+        )
+        feeds = {
             "skipped": True,
             "edition_type": edition_type,
             "market_timezone": market_timezone,
             "feed_date": feed_date_iso,
             "reason": "Feeds are ranked lazily per user when the app loads.",
-        },
-    }
+        }
+        _finish_recorded_run(
+            db,
+            pipeline_run,
+            metadata=metadata,
+            ingestion=ingestion,
+            summarization=summarization,
+            feeds=feeds,
+        )
+        return _recorded_result(
+            pipeline_run,
+            {
+                "ingestion": ingestion,
+                "summarization": summarization,
+                "feeds": feeds,
+            },
+        )
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
+    finally:
+        db.close()
 
 
 @celery.task
@@ -503,8 +755,15 @@ def dispatch_scheduled_editions_task() -> dict[str, object]:
 
 
 @celery.task
-def backfill_interest_based_news_task() -> dict[str, int]:
+def backfill_interest_based_news_task() -> dict[str, Any]:
     db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "task",
+        "task": "backfill_interest_based_news_task",
+    }
+    pipeline_run = _start_recorded_run(
+        db, run_type="interest_backfill", metadata=metadata
+    )
     try:
         service = NewsApiService()
         users = (
@@ -556,29 +815,70 @@ def backfill_interest_based_news_task() -> dict[str, int]:
                         upsert_article(db, normalized)
                         inserted += 1
             db.commit()
-        return {"inserted": inserted}
+        result = {"inserted": inserted}
+        _finish_recorded_run(
+            db,
+            pipeline_run,
+            metadata=metadata,
+            ingestion={"fetched": 0, "inserted": inserted},
+        )
+        return _recorded_result(pipeline_run, result)
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 
 
 @celery.task
-def reprocess_articles_task() -> dict[str, int]:
+def reprocess_articles_task() -> dict[str, Any]:
     db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "task",
+        "task": "reprocess_articles_task",
+    }
+    pipeline_run = _start_recorded_run(
+        db, run_type="article_reprocessing", metadata=metadata
+    )
     try:
         articles = db.query(db_model.Article).all()
         for article in articles:
             recalculate_article_features(article)
         db.commit()
-        return {"processed": len(articles)}
+        result = {"processed": len(articles)}
+        metadata["reprocessing"] = result
+        _finish_recorded_run(db, pipeline_run, metadata=metadata)
+        return _recorded_result(pipeline_run, result)
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 
 
 @celery.task
-def embed_articles_task(limit: int = 200) -> dict[str, int]:
+def embed_articles_task(limit: int = 200) -> dict[str, Any]:
     db = SessionLocal()
+    metadata: dict[str, Any] = {
+        "source": "task",
+        "task": "embed_articles_task",
+        "limit": limit,
+    }
+    pipeline_run = _start_recorded_run(
+        db, run_type="article_embeddings", metadata=metadata
+    )
     try:
-        return asyncio.run(_async_embed_articles(db, limit=limit))
+        result = asyncio.run(_async_embed_articles(db, limit=limit))
+        _finish_recorded_run(
+            db,
+            pipeline_run,
+            metadata=metadata,
+            embeddings=result,
+        )
+        return _recorded_result(pipeline_run, result)
+    except Exception as exc:
+        _fail_recorded_run(db, pipeline_run, metadata=metadata, error=exc)
+        raise
     finally:
         db.close()
 

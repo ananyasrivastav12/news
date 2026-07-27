@@ -50,7 +50,7 @@ Then:
 4. Confirm pending summaries are low and completed summaries increased.
 5. Log in as a test user.
 6. Pick interests.
-7. Confirm the feed shows up to 100 cards.
+7. Confirm the selected edition shows up to 50 cards.
 8. Like, skip, save, and open a story.
 9. Confirm profile stats and dashboard user signals update.
 

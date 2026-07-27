@@ -85,6 +85,8 @@ class AdminOverview(BaseModel):
     openai_daily_summary_limit: int
     openai_embedding_calls_planned: int
     last_successful_run_at: datetime | None = None
+    latest_article_fetched_at: datetime | None = None
+    latest_article_processed_at: datetime | None = None
     next_scheduled_run_at: datetime | None = None
 
 

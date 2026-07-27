@@ -7,6 +7,8 @@ export default function RootLayout() {
     <AppSessionProvider>
       <Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="login" />
+        <Stack.Screen name="edit-preferences" />
         <Stack.Screen name="+not-found" />
       </Stack>
     </AppSessionProvider>

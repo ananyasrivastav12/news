@@ -57,6 +57,17 @@ def read_admin_overview(db: Session = Depends(get_db)):
         .order_by(desc(db_model.PipelineRun.finished_at))
         .first()
     )
+    latest_article = (
+        db.query(db_model.Article)
+        .order_by(desc(db_model.Article.fetched_at).nullslast())
+        .first()
+    )
+    latest_processed_article = (
+        db.query(db_model.Article)
+        .filter(db_model.Article.processed_at.isnot(None))
+        .order_by(desc(db_model.Article.processed_at))
+        .first()
+    )
     next_schedule = (
         db.query(db_model.PipelineSchedule)
         .filter(
@@ -96,6 +107,12 @@ def read_admin_overview(db: Session = Depends(get_db)):
         "openai_embedding_calls_planned": embedding_candidates,
         "last_successful_run_at": (
             last_successful_run.finished_at if last_successful_run else None
+        ),
+        "latest_article_fetched_at": (
+            latest_article.fetched_at if latest_article else None
+        ),
+        "latest_article_processed_at": (
+            latest_processed_article.processed_at if latest_processed_article else None
         ),
         "next_scheduled_run_at": next_schedule.next_run_at if next_schedule else None,
     }
