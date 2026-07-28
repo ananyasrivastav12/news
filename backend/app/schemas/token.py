@@ -1,5 +1,4 @@
-# In app/schemas/token.py
-
+# auth token api schemas
 from pydantic import BaseModel
 
 

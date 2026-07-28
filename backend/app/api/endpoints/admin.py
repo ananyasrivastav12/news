@@ -1,3 +1,4 @@
+# admin-only routes for dashboard metrics, users, articles, and pipeline control
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -834,6 +835,29 @@ def _queue_pipeline_run(
     run_type: str,
     options: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    active_run = (
+        db.query(db_model.PipelineRun)
+        .filter(
+            db_model.PipelineRun.status.in_(
+                [
+                    db_model.PipelineRunStatus.QUEUED,
+                    db_model.PipelineRunStatus.RUNNING,
+                ]
+            )
+        )
+        .order_by(desc(db_model.PipelineRun.created_at), desc(db_model.PipelineRun.id))
+        .first()
+    )
+    if active_run is not None:
+        active_status = active_run.status.value
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Pipeline run #{active_run.id} is already {active_status}. "
+                "Wait for it to finish before starting another run."
+            ),
+        )
+
     metadata = {"options": options or {}}
     pipeline_run = create_pipeline_run(db, run_type, metadata=metadata)
     background_tasks.add_task(

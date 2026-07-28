@@ -1,3 +1,4 @@
+# alembic migration runtime configuration
 import os
 import sys
 from logging.config import fileConfig

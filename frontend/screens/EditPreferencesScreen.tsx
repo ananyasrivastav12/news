@@ -1,3 +1,4 @@
+// full-screen editor for topic and region preferences
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';

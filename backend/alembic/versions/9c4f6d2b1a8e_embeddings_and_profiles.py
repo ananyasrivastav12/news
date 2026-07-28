@@ -1,3 +1,4 @@
+# migration for article and user embedding storage
 """embeddings and profiles
 
 Revision ID: 9c4f6d2b1a8e

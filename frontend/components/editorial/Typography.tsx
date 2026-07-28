@@ -1,3 +1,4 @@
+// editorial text styles for mastheads, headlines, and metadata
 import React from 'react';
 import { Text, TextProps } from 'react-native';
 

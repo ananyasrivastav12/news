@@ -1,3 +1,4 @@
+# runs the producer pipeline locally without celery
 from __future__ import annotations
 
 import argparse

@@ -1,3 +1,4 @@
+# exports celery task entry points
 from .news_fetching import (
     backfill_interest_based_news_task,
     dispatch_scheduled_editions_task,

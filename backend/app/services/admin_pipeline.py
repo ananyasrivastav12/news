@@ -1,3 +1,4 @@
+# dashboard-run pipeline orchestration helpers
 from __future__ import annotations
 
 import asyncio
@@ -162,7 +163,11 @@ def run_pipeline_now(
             message=f"Finished {run_type.replace('_', ' ')}.",
         )
     except Exception as exc:
+        db.rollback()
         finished_at = datetime.now(timezone.utc)
+        pipeline_run = db.get(db_model.PipelineRun, pipeline_run_id)
+        if pipeline_run is None:
+            return
         pipeline_run.status = db_model.PipelineRunStatus.FAILED
         pipeline_run.finished_at = finished_at
         pipeline_run.duration_seconds = (finished_at - started_at).total_seconds()

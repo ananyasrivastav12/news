@@ -1,3 +1,4 @@
+// product design tokens for the editorial app ui
 import { Platform } from 'react-native';
 
 export const colors = {

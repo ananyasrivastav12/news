@@ -1,3 +1,4 @@
+# normalizes, validates, categorizes, and dedupes incoming articles
 from __future__ import annotations
 
 import hashlib
@@ -118,6 +119,7 @@ CATEGORY_KEYWORDS = {
 }
 
 
+# normalized articles are the clean boundary between external api data and db rows
 @dataclass
 class NormalizedArticle:
     title: str
@@ -137,6 +139,7 @@ class NormalizedArticle:
 
 
 def normalize_title(title: str) -> str:
+    # normalized titles support fuzzy duplicate detection
     normalized = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9 ]+", " ", title.lower())).strip()
     return normalized
 
@@ -155,6 +158,7 @@ def build_raw_text(title: str, description: str | None, content: str | None) -> 
 
 
 def extract_keywords(text: str, *, max_keywords: int = 8) -> list[str]:
+    # simple keyword counts give ranking useful signals before ml exists
     counts: dict[str, int] = {}
     for token in re.findall(r"[a-zA-Z][a-zA-Z0-9'-]{2,}", text.lower()):
         if token in STOPWORDS:
@@ -181,6 +185,7 @@ def _category_scores(title: str, text: str) -> dict[str, float]:
 
 
 def enrich_category(category: str, title: str, text: str) -> str:
+    # newsapi categories are broad, so title/text keywords can correct obvious misses
     default_category = (category or "general").lower()
     default_category = (
         default_category if default_category in CATEGORY_KEYWORDS else "general"
@@ -202,6 +207,7 @@ def enrich_category(category: str, title: str, text: str) -> str:
 
 
 def build_story_key(normalized_title: str) -> str:
+    # story keys catch repeated coverage across sources with different urls
     tokens = [token for token in normalized_title.split() if token not in STOPWORDS][
         :10
     ]
@@ -219,6 +225,7 @@ def is_recent(published_at: datetime | None) -> bool:
 
 
 def is_valid_article(raw_article: dict[str, Any]) -> bool:
+    # reject thin or stale articles before they consume summary quota
     title = clean_text(raw_article.get("title"))
     url = (raw_article.get("url") or "").strip()
     raw_text = build_raw_text(
@@ -282,6 +289,7 @@ def recalculate_article_features(article: db_model.Article) -> None:
 
 
 def is_duplicate_article(db: Session, article: NormalizedArticle) -> bool:
+    # url catches exact duplicates; title similarity catches syndication copies
     by_url = (
         db.query(db_model.Article)
         .filter(db_model.Article.original_url == article.original_url)

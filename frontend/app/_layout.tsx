@@ -1,3 +1,4 @@
+// root app layout and session provider
 import { Stack } from 'expo-router';
 
 import { AppSessionProvider } from '@/context/AppSessionContext';

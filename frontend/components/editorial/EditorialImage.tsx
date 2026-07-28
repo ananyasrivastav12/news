@@ -1,3 +1,4 @@
+// article image with loading and fallback states
 import { Image } from 'expo-image';
 import React, { useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';

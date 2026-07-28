@@ -1,3 +1,4 @@
+# reader feed, interaction, and saved-story routes
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -22,83 +23,8 @@ from app.services.feed_editions import (
 )
 from app.services.recommendations import build_today_feed
 from app.services.user_profile import log_interaction
-from app.tasks import (
-    backfill_interest_based_news_task,
-    embed_articles_task,
-    fetch_news_task,
-    generate_feed_edition_task,
-    reprocess_articles_task,
-    run_daily_pipeline_task,
-    summarize_articles_task,
-)
 
 router = APIRouter()
-
-
-@router.post("/tasks/fetch-news", status_code=202)
-def trigger_fetch_news():
-    async_result = fetch_news_task.delay()
-    return {"message": "News ingestion task queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/summarize-news", status_code=202)
-def trigger_summarization(
-    limit: int = Query(default=100, ge=1, le=500),
-    force_refresh: bool = Query(default=False),
-):
-    async_result = summarize_articles_task.delay(
-        limit=limit, force_refresh=force_refresh
-    )
-    return {"message": "Summarization task queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/generate-feeds", status_code=202)
-def trigger_feed_generation(
-    feed_date: date | None = None,
-    edition_type: str = Query(default=MORNING_BRIEF),
-    market_timezone: str = Query(default=DEFAULT_TIMEZONE),
-    force_refresh: bool = Query(default=False),
-    summarize_first: bool = Query(default=True),
-    summary_limit: int = Query(default=100, ge=1, le=500),
-):
-    try:
-        validate_edition_type(edition_type)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    market_timezone = normalize_timezone(market_timezone)
-    async_result = generate_feed_edition_task.delay(
-        feed_date.isoformat() if feed_date else None,
-        edition_type,
-        market_timezone,
-        force_refresh,
-        summarize_first,
-        summary_limit,
-    )
-    return {"message": "Feed generation task queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/daily-pipeline", status_code=202)
-def trigger_daily_pipeline():
-    async_result = run_daily_pipeline_task.delay()
-    return {"message": "Daily news pipeline queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/backfill-interest-news", status_code=202)
-def trigger_interest_backfill():
-    async_result = backfill_interest_based_news_task.delay()
-    return {"message": "Interest backfill task queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/reprocess-articles", status_code=202)
-def trigger_article_reprocessing():
-    async_result = reprocess_articles_task.delay()
-    return {"message": "Article reprocessing task queued.", "task_id": async_result.id}
-
-
-@router.post("/tasks/embed-articles", status_code=202)
-def trigger_article_embeddings(limit: int = Query(default=200, ge=1, le=1000)):
-    async_result = embed_articles_task.delay(limit=limit)
-    return {"message": "Article embedding task queued.", "task_id": async_result.id}
 
 
 def _edition_status(

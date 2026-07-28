@@ -1,3 +1,4 @@
+// typed api client for the mobile app
 export type Interest = {
   id: number;
   name: string;
@@ -242,24 +243,5 @@ export function deleteInteraction(
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` },
     }
-  );
-}
-
-export function triggerFeedGeneration(
-  apiBaseUrl: string,
-  options: {
-    feedDate?: string | null;
-    editionType?: FeedEditionType;
-    marketTimezone?: string;
-  } = {}
-) {
-  const search = new URLSearchParams({ force_refresh: 'true' });
-  if (options.feedDate) search.set('feed_date', options.feedDate);
-  if (options.editionType) search.set('edition_type', options.editionType);
-  if (options.marketTimezone) search.set('market_timezone', options.marketTimezone);
-  return request<{ message: string; task_id: string }>(
-    apiBaseUrl,
-    `/api/tasks/generate-feeds?${search.toString()}`,
-    { method: 'POST' }
   );
 }

@@ -1,4 +1,6 @@
+# tests backend contracts used by the mobile app and dashboard
 import os
+from asyncio import run
 from datetime import date, datetime, timedelta, timezone
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -25,9 +27,13 @@ from app.db.model import (
     UserInterest,
 )
 from app.main import app
-from app.services.feed_editions import MORNING_BRIEF
-from app.services.recommendations import rank_articles_for_user
-from app.tasks.news_fetching import _build_user_feed
+from app.services.feed_editions import DEFAULT_TIMEZONE, MORNING_BRIEF, local_feed_date
+from app.services.recommendations import (
+    RankedArticle,
+    rank_articles_for_user,
+    rerank_with_constraints,
+)
+from app.tasks.news_fetching import _async_summarize_articles, _build_user_feed
 
 engine = create_engine(
     "sqlite://",
@@ -96,6 +102,56 @@ def _article(
     )
 
 
+def _seed_demo_feed(db, user: User, feed_date: date) -> list[Flashcard]:
+    # tests seed real-looking cards without exposing demo routes in the api
+    now = datetime.now(timezone.utc)
+    specs = [
+        ("AI tools move into newsroom workflows", "technology"),
+        ("Markets watch consumer spending forecasts", "business"),
+        ("Researchers map neighborhood climate risk", "science"),
+        ("Streaming platforms test shorter seasons", "entertainment"),
+        ("Teams use player tracking for decisions", "sports"),
+    ]
+    articles = [
+        _article(
+            title=title,
+            country="us",
+            category=category,
+            published_at=now - timedelta(minutes=index * 20),
+        )
+        for index, (title, category) in enumerate(specs)
+    ]
+    db.add_all(articles)
+    db.flush()
+    for article in articles:
+        db.add(
+            Summary(
+                article_id=article.id,
+                display_headline=article.title,
+                main_takeaway=f"{article.title} is ready for the briefing.",
+                supporting_lines=[
+                    "The story has enough context for a compact card.",
+                ],
+                summary_text=f"{article.title} is ready for the briefing.",
+                why_it_matters=None,
+                model_name="test",
+            )
+        )
+    db.commit()
+    _build_user_feed(db, user, feed_date, force_refresh=True)
+    return (
+        db.query(Flashcard)
+        .filter_by(
+            user_id=user.id,
+            feed_date=feed_date,
+            edition_type=MORNING_BRIEF,
+            market_timezone=DEFAULT_TIMEZONE,
+        )
+        .order_by(Flashcard.rank_position.asc())
+        .all()
+    )
+
+
 def test_country_category_intersection_ranks_first():
     db = TestingSessionLocal()
     try:
@@ -158,6 +214,106 @@ def test_country_category_intersection_ranks_first():
 
         assert ranked[0].article.title == "India cricket final"
         assert ranked[0].reason == "market_category"
+    finally:
+        db.close()
+
+
+def test_rerank_counts_selected_exploration_items_only(monkeypatch):
+    monkeypatch.setattr("app.services.recommendations.settings.FEED_EDITION_SIZE", 4)
+    monkeypatch.setattr("app.services.recommendations.settings.MAX_FEED_ITEMS", 4)
+    monkeypatch.setattr(
+        "app.services.recommendations.settings.FEED_EXPLORATION_RATIO", 0.25
+    )
+
+    market_article = _article(
+        title="Market technology lead",
+        country="us",
+        category="technology",
+        published_at=datetime.now(timezone.utc),
+    )
+    exploration_article = _article(
+        title="Exploration article",
+        country="fr",
+        category="science",
+        published_at=datetime.now(timezone.utc),
+    )
+    global_article = _article(
+        title="Global technology article",
+        country="fr",
+        category="technology",
+        published_at=datetime.now(timezone.utc),
+    )
+
+    ranked = rerank_with_constraints(
+        [
+            RankedArticle(
+                article=market_article,
+                score=10.0,
+                reason="market_category",
+                lane="market_category",
+            ),
+            RankedArticle(
+                article=exploration_article,
+                score=6.0,
+                reason="exploration",
+                lane="exploration",
+            ),
+            RankedArticle(
+                article=global_article,
+                score=5.5,
+                reason="category_global",
+                lane="category_global",
+            ),
+        ],
+        explicit_interests={"technology"},
+        explicit_categories={"technology"},
+        explicit_country_codes=set(),
+        selected_country_codes=set(),
+        edition_type=MORNING_BRIEF,
+    )
+
+    assert [item.article.title for item in ranked[:2]] == [
+        "Market technology lead",
+        "Exploration article",
+    ]
+
+
+def test_summarization_counts_only_created_embeddings(monkeypatch):
+    async def fake_summarize(self, *, title, description, content):
+        return {
+            "display_headline": title,
+            "main_takeaway": "The article has a concise summary.",
+            "supporting_lines": [],
+            "summary_text": "The article has a concise summary.",
+            "why_it_matters": "",
+            "model_name": "test",
+        }
+
+    async def fake_embed_text(self, text):
+        return None
+
+    monkeypatch.setattr(
+        "app.tasks.news_fetching.ArticleSummarizer.summarize", fake_summarize
+    )
+    monkeypatch.setattr(
+        "app.tasks.news_fetching.EmbeddingService.embed_text", fake_embed_text
+    )
+
+    db = TestingSessionLocal()
+    try:
+        article = _article(
+            title="Pending summary article",
+            country="us",
+            category="technology",
+            published_at=datetime.now(timezone.utc),
+        )
+        article.summary_status = SummaryStatus.PENDING
+        db.add(article)
+        db.commit()
+
+        result = run(_async_summarize_articles(db, limit=1))
+
+        assert result == {"processed": 1, "failed": 0, "embedded": 0}
     finally:
         db.close()
 
@@ -263,13 +419,20 @@ def test_frontend_setup_and_feed_contract():
     assert feed_response.status_code == 200
     assert feed_response.json() == []
 
-    demo_response = client.post("/api/dev/demo-feed", headers=headers)
-    assert demo_response.status_code == 201
-    demo_payload = demo_response.json()
-    assert demo_payload["message"].startswith("Loaded ")
-    assert len(demo_payload["items"]) > 0
-    assert demo_payload["items"][0]["article"]["summary"]["main_takeaway"]
-    first_article_id = demo_payload["items"][0]["article"]["id"]
+    target_feed_date = local_feed_date(DEFAULT_TIMEZONE)
+    db = TestingSessionLocal()
+    try:
+        user = db.query(User).filter_by(email="reader@example.com").one()
+        seeded_cards = _seed_demo_feed(db, user, target_feed_date)
+        first_article_id = seeded_cards[0].article_id
+    finally:
+        db.close()
+
+    demo_feed_response = client.get("/api/users/me/feed", headers=headers)
+    assert demo_feed_response.status_code == 200
+    demo_items = demo_feed_response.json()
+    assert len(demo_items) > 0
+    assert demo_items[0]["article"]["summary"]["main_takeaway"]
 
     save_response = client.post(
         "/api/users/me/interactions",
@@ -289,11 +452,11 @@ def test_frontend_setup_and_feed_contract():
     db = TestingSessionLocal()
     try:
         user = db.query(User).filter_by(email="reader@example.com").one()
-        first_count = _build_user_feed(db, user, date.today(), force_refresh=False)
-        second_count = _build_user_feed(db, user, date.today(), force_refresh=False)
+        first_count = _build_user_feed(db, user, target_feed_date, force_refresh=False)
+        second_count = _build_user_feed(db, user, target_feed_date, force_refresh=False)
         flashcard_count = (
             db.query(Flashcard)
-            .filter_by(user_id=user.id, feed_date=date.today())
+            .filter_by(user_id=user.id, feed_date=target_feed_date)
             .count()
         )
         assert second_count == first_count

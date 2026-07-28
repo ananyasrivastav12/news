@@ -1,3 +1,4 @@
+/* admin dashboard layout and visual system */
 :root {
   --color-text: #151412;
   --color-muted: #6d6861;
@@ -993,6 +994,12 @@ tr:hover td {
   border-color: #b8c9ad;
   background: var(--color-success-soft);
   color: var(--color-success);
+}
+
+.inline-state.warn {
+  border-color: #dfc3b9;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
 }
 
 .legend-grid {

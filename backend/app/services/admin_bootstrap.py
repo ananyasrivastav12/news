@@ -1,3 +1,4 @@
+# creates the first admin user from env on startup
 from __future__ import annotations
 
 import logging

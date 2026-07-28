@@ -1,3 +1,4 @@
+# user api schemas
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
@@ -14,6 +15,7 @@ class User(UserBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# interaction totals shown on profile
 class ProfileSignalCounts(BaseModel):
     viewed: int
     liked: int

@@ -1,3 +1,4 @@
+# ranks articles and persists stable user feed editions
 from __future__ import annotations
 
 import logging
@@ -40,6 +41,8 @@ MARKET_COUNTRY_BY_TIMEZONE = {
     "America/New_York": "us",
     "Asia/Kolkata": "in",
 }
+# Lanes make ranking explainable: first fill a user's market/category interests,
+# then add market context, global category matches, and a small exploration slice.
 EDITION_LANE_RATIOS = {
     MORNING_BRIEF: {
         "market_category": 0.60,
@@ -128,26 +131,6 @@ def _keyword_overlap(left: list[str] | None, right: list[str] | None) -> float:
     return len(left_set & right_set) / len(left_set | right_set)
 
 
-def _stage_for_article(
-    item: RankedArticle,
-    *,
-    explicit_interests: set[str],
-    explicit_interest_terms: set[str],
-    explicit_country_codes: set[str],
-) -> int:
-    category = item.article.primary_category
-    keywords = set(item.article.keywords or [])
-    if item.article.country in explicit_country_codes:
-        return 0
-    if category in explicit_interests:
-        return 0
-    if keywords & explicit_interest_terms:
-        return 1
-    if explicit_interests:
-        return 2
-    return 3
-
-
 def build_today_feed(
     db: Session,
     *,
@@ -197,6 +180,7 @@ def build_today_feed(
             for flashcard in active_existing
         ]
 
+    # Viewed cards are archived instead of deleted so refreshes keep read history stable.
     excluded_article_ids = get_existing_feed_article_ids(
         db,
         user=user,
@@ -536,6 +520,8 @@ def rerank_with_constraints(
     edition_type: str,
 ) -> list[RankedArticle]:
     max_feed_items = settings.MAX_FEED_ITEMS
+    # These targets shape the first visible edition; overflow can still fill
+    # MAX_FEED_ITEMS so users can keep swiping without immediate repetition.
     lane_targets = _lane_targets(
         edition_type=edition_type,
         total=settings.feed_edition_size,
@@ -618,6 +604,7 @@ def rerank_with_constraints(
                 adjusted_score += 0.35
 
             if selected_keywords:
+                # Penalize near-duplicate keyword sets so one topic does not dominate a feed.
                 max_similarity = max(
                     _keyword_overlap(article.keywords, existing_keywords)
                     for existing_keywords in selected_keywords[-5:]
@@ -661,7 +648,7 @@ def rerank_with_constraints(
             country_counts.get(selected_article.country, 0) + 1
         )
         lane_counts[best_item.lane] = lane_counts.get(best_item.lane, 0) + 1
-        if is_exploration:
+        if best_item.lane == "exploration":
             exploration_count += 1
         recent_categories.append(selected_category)
         selected_keywords.append(selected_article.keywords or [])

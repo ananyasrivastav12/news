@@ -1,3 +1,4 @@
+# celery tasks for ingestion, summarization, embeddings, and feed runs
 from __future__ import annotations
 
 import asyncio
@@ -65,6 +66,7 @@ async def _fetch_country_category_articles(
     country: str,
     category: str,
 ) -> tuple[list[dict], str]:
+    # non-default countries fall back through source lookup, then search query
     default_country = settings.NEWS_API_COUNTRY.lower()
     if country.lower() == default_country:
         articles = await service.fetch_top_headlines(
@@ -91,6 +93,7 @@ async def _fetch_country_category_articles(
 
 
 async def _async_ingest_news(db: Session) -> dict[str, Any]:
+    # split the daily target across markets so one country cannot consume the pool
     service = NewsApiService()
     categories = _get_batch_categories()
     countries = _get_batch_countries()
@@ -158,6 +161,7 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
 
 
 def _prune_article_pool(db: Session) -> int:
+    # saved articles are protected because users expect bookmarks to stay
     pool_limit = max(1, settings.ARTICLE_POOL_LIMIT)
     saved_article_ids = (
         select(db_model.UserArticleInteraction.article_id)
@@ -247,10 +251,12 @@ async def _async_summarize_articles(
             article.summary_status = db_model.SummaryStatus.COMPLETED
             article.processed_at = datetime.now(timezone.utc)
             try:
+                # embeddings improve ranking, but summaries are still useful without them
                 article.embedding = await embedding_service.embed_text(
                     summary.summary_text
                 )
-                embedded += 1
+                if article.embedding is not None:
+                    embedded += 1
             except Exception:
                 article.embedding = article.embedding
             processed += 1
@@ -265,6 +271,7 @@ async def _async_summarize_articles(
 def _select_articles_for_summarization(
     db: Session, *, limit: int, force_refresh: bool
 ) -> list[db_model.Article]:
+    # balance summary quota across markets before filling the rest by recency
     limit = max(1, limit)
     countries = _get_batch_countries()
     per_country_limit = max(1, ceil(limit / max(1, len(countries))))
@@ -374,6 +381,7 @@ def _finish_recorded_run(
     feeds: dict[str, Any] | None = None,
     embeddings: dict[str, Any] | None = None,
 ) -> None:
+    # store rollups and raw metadata so the dashboard can explain each run
     if ingestion is not None:
         pipeline_run.fetched_count += int(ingestion.get("fetched", 0))
         pipeline_run.inserted_count += int(ingestion.get("inserted", 0))
@@ -647,6 +655,7 @@ def run_daily_pipeline_task() -> dict[str, object]:
                 force_refresh=False,
             )
         )
+        # feeds are generated lazily so each user gets fresh preferences applied
         feeds = {
             "skipped": True,
             "reason": "Feeds are ranked lazily per user when the app loads.",

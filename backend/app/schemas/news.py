@@ -1,3 +1,4 @@
+# feed and interaction api schemas
 from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -6,6 +7,7 @@ from app.db.model import InteractionType
 from app.services.summarizer import ArticleSummarizer
 
 
+# card copy returned to the mobile feed
 class SummaryOut(BaseModel):
     display_headline: str | None = None
     main_takeaway: str
@@ -27,7 +29,7 @@ class SummaryOut(BaseModel):
     def display_complete_sentences(cls, value: str) -> str:
         return ArticleSummarizer._fit_paragraph(
             ArticleSummarizer._drop_truncated_sentences(value),
-            max_chars=320,
+            max_chars=ArticleSummarizer.SUMMARY_MAX_CHARS,
             max_lines=ArticleSummarizer.SUMMARY_MAX_LINES,
         )
 
@@ -54,6 +56,7 @@ class FeedArticle(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+# one persisted card in a user's edition
 class FeedItem(BaseModel):
     id: int
     feed_date: date
@@ -87,6 +90,7 @@ class FeedEditionsResponse(BaseModel):
     editions: list[FeedEditionOut]
 
 
+# user feedback used for ranking
 class InteractionCreate(BaseModel):
     article_id: int
     interaction_type: InteractionType

@@ -1,5 +1,4 @@
-# In app/api/dependencies.py
-
+# shared fastapi dependencies for db sessions and auth guards
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
@@ -12,6 +11,7 @@ from app.db.session import SessionLocal
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login/access-token")
 
 
+# one db session per request keeps transactions scoped
 def get_db():
     db = SessionLocal()
     try:
@@ -23,6 +23,7 @@ def get_db():
 def get_current_user(
     db: Session = Depends(get_db), token: str = Depends(oauth2_scheme)
 ):
+    # jwt subject is the user id stored at login
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -47,6 +48,7 @@ def get_current_user(
 def get_current_admin_user(
     current_user: db_model.User = Depends(get_current_user),
 ):
+    # admin is an allowlist, not a separate public role flag
     if current_user.email.lower() not in settings.admin_emails:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

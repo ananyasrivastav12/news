@@ -1,3 +1,4 @@
+# database tables for users, articles, feeds, signals, and pipeline runs
 import enum
 
 from sqlalchemy import (
@@ -80,6 +81,7 @@ class User(Base):
 class Interest(Base):
     __tablename__ = "interests"
 
+    # interests are user-selected topics or regions
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True, nullable=False)
     source_type = Column(Enum(SourceType), nullable=False)
@@ -100,6 +102,7 @@ class UserInterest(Base):
 class Article(Base):
     __tablename__ = "articles"
 
+    # articles are stored once and reused across users
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String, nullable=False)
     normalized_title = Column(String, index=True, nullable=False)
@@ -171,6 +174,7 @@ class Flashcard(Base):
         ),
     )
 
+    # flashcards keep each user's edition stable
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     article_id = Column(Integer, ForeignKey("articles.id"), nullable=False)
@@ -194,6 +198,7 @@ class Flashcard(Base):
 class UserArticleInteraction(Base):
     __tablename__ = "user_article_interactions"
 
+    # signals record what users did with a story
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     article_id = Column(Integer, ForeignKey("articles.id"), nullable=False, index=True)
@@ -212,6 +217,7 @@ class UserCategoryPreference(Base):
         UniqueConstraint("user_id", "category", name="uq_user_category_preference"),
     )
 
+    # learned category scores nudge future feeds
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     category = Column(String, nullable=False, index=True)
@@ -249,6 +255,7 @@ class UserKeywordPreference(Base):
 class UserEmbeddingProfile(Base):
     __tablename__ = "user_embedding_profiles"
 
+    # averaged positive-story embedding for semantic matches
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     embedding = Column(JSON, nullable=False, default=list)
     updated_at = Column(

@@ -1,3 +1,4 @@
+# makes pipeline metadata safe for json storage
 from __future__ import annotations
 
 import enum

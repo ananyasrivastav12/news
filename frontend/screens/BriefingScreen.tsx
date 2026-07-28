@@ -1,3 +1,4 @@
+// main swipeable briefing screen
 import { Ionicons } from '@expo/vector-icons';
 import { Image } from 'expo-image';
 import * as Haptics from 'expo-haptics';

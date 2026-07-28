@@ -1,4 +1,4 @@
-# In app/db/scripts/initial_data.py
+# seeds default reader interests
 
 import sys
 from pathlib import Path

@@ -1,9 +1,10 @@
+# fastapi app wiring for middleware, startup, and routers
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.endpoints import admin, dev, interests, login, news, users
+from app.api.endpoints import admin, interests, login, news, users
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.admin_bootstrap import bootstrap_admin_user
@@ -37,7 +38,6 @@ app.include_router(login.router, prefix="/api", tags=["login"])
 app.include_router(users.router, prefix="/api", tags=["users"])
 app.include_router(interests.router, prefix="/api", tags=["interests"])
 app.include_router(news.router, prefix="/api", tags=["news"])
-app.include_router(dev.router, prefix="/api", tags=["dev"])
 app.include_router(admin.router, prefix="/api", tags=["admin"])
 
 

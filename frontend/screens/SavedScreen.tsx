@@ -1,7 +1,8 @@
+// saved stories list and unsave flow
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -27,8 +28,6 @@ import { colors, layout, radius, shadows, spacing } from '@/design/tokens';
 import { BriefingStory, getRelativeDate, savedArticleToBriefingStory } from '@/lib/briefingStory';
 import { SavedArticle, deleteInteraction, fetchSavedArticles } from '@/lib/api';
 
-const DEFAULT_FILTERS = ['All', 'Entertainment', 'Sports'];
-
 function storyCountLabel(count: number) {
   return `${count} ${count === 1 ? 'story' : 'stories'}`;
 }
@@ -50,6 +49,11 @@ export default function SavedScreen() {
     const sections = Array.from(new Set(stories.map((story) => story.section))).slice(0, 5);
     return ['All', ...sections.filter((section) => section !== 'All')];
   }, [stories]);
+  useEffect(() => {
+    if (!filters.includes(filter)) {
+      setFilter('All');
+    }
+  }, [filter, filters]);
   const visibleStories = useMemo(
     () => stories.filter((story) => filter === 'All' || story.section === filter),
     [filter, stories]
@@ -127,25 +131,27 @@ export default function SavedScreen() {
           <Metadata style={styles.muted}>{storyCountLabel(stories.length)}</Metadata>
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          {(filters.length > 1 ? filters : DEFAULT_FILTERS).map((item) => {
-            const selected = item === filter;
-            return (
-              <Pressable
-                key={item}
-                accessibilityRole="button"
-                accessibilityState={{ selected }}
-                style={styles.filterItem}
-                onPress={() => setFilter(item)}
-              >
-                <Metadata style={[styles.filterText, selected && styles.filterTextSelected]}>
-                  {item.toUpperCase()}
-                </Metadata>
-                <View style={[styles.filterRule, selected && styles.filterRuleSelected]} />
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+        {filters.length > 1 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+            {filters.map((item) => {
+              const selected = item === filter;
+              return (
+                <Pressable
+                  key={item}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected }}
+                  style={styles.filterItem}
+                  onPress={() => setFilter(item)}
+                >
+                  <Metadata style={[styles.filterText, selected && styles.filterTextSelected]}>
+                    {item.toUpperCase()}
+                  </Metadata>
+                  <View style={[styles.filterRule, selected && styles.filterRuleSelected]} />
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
 
         {error ? (
           <View style={styles.banner} accessibilityLiveRegion="polite">

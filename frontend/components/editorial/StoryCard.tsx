@@ -1,3 +1,4 @@
+// swipeable news card content and actions
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -114,7 +115,7 @@ export function StoryCard({
           </View>
           <View style={styles.divider} />
           <View style={styles.summaryWrap}>
-            <Summary numberOfLines={7}>{story.shortSummary}</Summary>
+            <Summary numberOfLines={9}>{story.shortSummary}</Summary>
           </View>
         </View>
       </View>

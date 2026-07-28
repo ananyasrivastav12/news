@@ -1,3 +1,4 @@
+// admin dashboard app for pipeline control and observability
 import React, { FormEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
@@ -452,7 +453,7 @@ function HomePage({ api }: { api: Api }) {
               tone={missingEmbeddings > 0 ? "warn" : "good"}
             />
             <MetricTile
-              label="Protected saved"
+              label="Saved articles"
               value={overview.protected_articles}
               tone={overview.protected_articles > 0 ? "neutral" : "good"}
             />
@@ -659,6 +660,9 @@ function PipelineRunsSection({
   }
 
   const visibleRuns = showAllRuns ? runs : runs.slice(0, 5);
+  const activeRun =
+    runs.find((run) => run.status === "queued" || run.status === "running") ?? null;
+  const pipelineBusy = pendingAction !== null || activeRun !== null;
 
   return (
     <div className="pipeline-control-stack">
@@ -670,7 +674,7 @@ function PipelineRunsSection({
             description="Fetch + summarize"
             tone="primary"
             busy={pendingAction === "Content pipeline"}
-            disabled={pendingAction !== null}
+            disabled={pipelineBusy}
             buttonLabel="Run"
             buttonClassName="quiet-action-button"
             onClick={() => run("/api/admin/pipeline-runs/full", "Content pipeline")}
@@ -680,7 +684,7 @@ function PipelineRunsSection({
             description="Fetch only"
             tone="good"
             busy={pendingAction === "Ingest"}
-            disabled={pendingAction !== null}
+            disabled={pipelineBusy}
             buttonLabel="Run"
             buttonClassName="quiet-action-button"
             onClick={() => run("/api/admin/pipeline-runs/ingest", "Ingest")}
@@ -690,7 +694,7 @@ function PipelineRunsSection({
             description="Summaries only"
             tone="warn"
             busy={pendingAction === "Summarize"}
-            disabled={pendingAction !== null}
+            disabled={pipelineBusy}
             buttonLabel="Run"
             buttonClassName="quiet-action-button"
             onClick={() => run("/api/admin/pipeline-runs/summarize", "Summarize")}
@@ -698,6 +702,12 @@ function PipelineRunsSection({
         </div>
       </section>
       {actionStatus ? <InlineState message={actionStatus} tone="success" /> : null}
+      {activeRun ? (
+        <InlineState
+          message={`Run #${activeRun.id} is ${activeRun.status}. Wait for it before starting another pipeline run.`}
+          tone="warn"
+        />
+      ) : null}
       {children}
       {loading ? <InlineState message="Loading runs..." /> : null}
       <ChartPanel title="Recent Runs">
@@ -1956,7 +1966,13 @@ function EmptyState({ message }: { message: string }) {
   return <div className="empty-state">{message}</div>;
 }
 
-function InlineState({ message, tone }: { message: string; tone?: "success" }) {
+function InlineState({
+  message,
+  tone,
+}: {
+  message: string;
+  tone?: "success" | "warn";
+}) {
   return <div className={`inline-state ${tone ?? ""}`}>{message}</div>;
 }
 

@@ -1,3 +1,4 @@
+# tests summary shaping for mobile card constraints
 import os
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -46,7 +47,7 @@ def test_shape_summary_enforces_mobile_display_constraints():
         <= 3
     )
     assert result["main_takeaway"].endswith(".")
-    assert len(result["main_takeaway"].split()) <= 48
+    assert len(result["main_takeaway"].split()) <= summarizer.SUMMARY_MAX_WORDS
     assert (
         summarizer._estimated_line_count(
             result["main_takeaway"],
@@ -54,7 +55,7 @@ def test_shape_summary_enforces_mobile_display_constraints():
             font_size_px=summarizer.SUMMARY_FONT_SIZE_PX,
             family="sans",
         )
-        <= 7
+        <= summarizer.SUMMARY_MAX_LINES
     )
     assert result["supporting_lines"] == []
     assert result["summary_text"].count(".") >= 3
@@ -75,3 +76,54 @@ def test_invalid_why_it_matters_is_omitted():
     )
 
     assert result["why_it_matters"] == ""
+
+
+def test_shape_summary_uses_full_summary_when_card_body_is_too_short():
+    summarizer = ArticleSummarizer()
+
+    result = summarizer._shape_summary(
+        title="Apple smart glasses privacy plan",
+        display_headline="Apple smart glasses privacy plan",
+        main_takeaway="Apple is expected to make privacy central to its smart glasses.",
+        full_summary=(
+            "Apple is expected to make privacy central to its smart glasses as it "
+            "prepares a possible product reveal next June. The company is trying "
+            "to separate its wearable from rivals by limiting how cameras, data, "
+            "and visible recording features are handled. That approach could shape "
+            "whether customers see the device as useful daily hardware or another "
+            "always-on camera."
+        ),
+        why_it_matters="",
+        supporting_lines=[],
+        model_name="test-model",
+    )
+
+    assert "possible product reveal" in result["main_takeaway"]
+    assert len(result["main_takeaway"].split()) > len(
+        "Apple is expected to make privacy central to its smart glasses.".split()
+    )
+    assert (
+        summarizer._estimated_line_count(
+            result["main_takeaway"],
+            max_width_px=summarizer.SUMMARY_MAX_WIDTH_PX,
+            font_size_px=summarizer.SUMMARY_FONT_SIZE_PX,
+            family="sans",
+        )
+        <= summarizer.SUMMARY_MAX_LINES
+    )
+
+
+def test_short_openai_card_body_gets_validation_feedback():
+    summarizer = ArticleSummarizer()
+
+    issues = summarizer._display_copy_issues(
+        {
+            "display_headline": "Apple smart glasses privacy plan",
+            "main_takeaway": (
+                "Apple is expected to make privacy central to its smart glasses."
+            ),
+            "why_it_matters": "",
+        }
+    )
+
+    assert any("under" in issue for issue in issues)

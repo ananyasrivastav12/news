@@ -1,3 +1,4 @@
+// shared session state for auth token, email, and api url
 import Constants from 'expo-constants';
 import * as SecureStore from 'expo-secure-store';
 import React, {

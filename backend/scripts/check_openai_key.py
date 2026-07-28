@@ -1,3 +1,4 @@
+# quick local check for openai summary credentials
 from __future__ import annotations
 
 import asyncio

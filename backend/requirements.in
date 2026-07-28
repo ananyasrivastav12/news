@@ -3,13 +3,14 @@ uvicorn[standard]
 python-dotenv
 pydantic
 sqlalchemy[asyncio]
+psycopg2-binary
 alembic
 pytest
 black
 isort
 flake8
 mypy
-passlib[bcrypt]
+passlib
 email-validator
 python-jose[cryptography]
 python-multipart

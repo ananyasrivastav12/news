@@ -1,3 +1,4 @@
+# local-time definitions for daily feed editions
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ DEFAULT_TIMEZONE = "America/New_York"
 
 @dataclass(frozen=True)
 class FeedEditionDefinition:
+    # one edition type at one local publish time
     edition_type: str
     title: str
     publish_time: time
@@ -35,6 +37,7 @@ EDITION_BY_TYPE = {
 
 
 def normalize_timezone(value: str | None) -> str:
+    # keep legacy india timezone spelling compatible
     if value == "Asia/Calcutta":
         return "Asia/Kolkata"
     if value in SUPPORTED_TIMEZONES:
@@ -68,6 +71,7 @@ def edition_publish_at(
 
 
 def expected_edition_types(now: datetime) -> list[str]:
+    # the app opens to the newest edition that should exist by local time
     return [
         definition.edition_type
         for definition in EDITION_DEFINITIONS
@@ -83,6 +87,7 @@ def latest_expected_edition_type(now: datetime) -> str:
 def is_edition_due(
     now: datetime, edition_type: str, dispatch_window_minutes: int = 15
 ) -> bool:
+    # beat can run repeatedly, so only queue inside a small dispatch window
     definition = EDITION_BY_TYPE[edition_type]
     publish_at = datetime.combine(
         now.date(), definition.publish_time, tzinfo=now.tzinfo

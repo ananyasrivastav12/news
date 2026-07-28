@@ -1,3 +1,4 @@
+# builds dashboard summaries for article pool health
 from __future__ import annotations
 
 from collections.abc import Sequence

@@ -1,3 +1,4 @@
+// maps backend feed records into story card view models
 import { FeedItem, SavedArticle } from '@/lib/api';
 
 export type BriefingStory = {

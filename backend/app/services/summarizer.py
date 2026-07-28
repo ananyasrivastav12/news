@@ -1,3 +1,4 @@
+# turns article text into mobile-card summaries
 from __future__ import annotations
 
 import asyncio
@@ -11,13 +12,17 @@ from app.core.config import settings
 
 
 class ArticleSummarizer:
+    # retry only errors that are usually temporary
     TRANSIENT_OPENAI_STATUSES = {408, 409, 429, 500, 502, 503, 504}
     HEADLINE_MAX_WIDTH_PX = 300
     HEADLINE_FONT_SIZE_PX = 18
     HEADLINE_MAX_LINES = 3
     SUMMARY_MAX_WIDTH_PX = 300
     SUMMARY_FONT_SIZE_PX = 16
-    SUMMARY_MAX_LINES = 7
+    SUMMARY_MAX_LINES = 9
+    SUMMARY_MIN_WORDS = 48
+    SUMMARY_MAX_WORDS = 62
+    SUMMARY_MAX_CHARS = 430
 
     def __init__(self) -> None:
         self.api_key = (settings.OPENAI_API_KEY or "").strip()
@@ -26,6 +31,7 @@ class ArticleSummarizer:
     async def summarize(
         self, *, title: str, description: str | None, content: str | None
     ) -> dict[str, Any]:
+        # fallback keeps local demos working without openai
         raw_text = "\n".join(
             part for part in [title, description, content] if part
         ).strip()
@@ -51,6 +57,7 @@ class ArticleSummarizer:
         import json
 
         for attempt in range(3):
+            # schema output keeps card fields predictable for the mobile app
             payload = {
                 "model": self.model,
                 "input": self._build_prompt(
@@ -142,15 +149,16 @@ class ArticleSummarizer:
             "dates, and vague teaser language. Do not sensationalize. Target 55 to "
             "75 characters. It must fit 2 to 3 visual lines in a 300px column using "
             "Georgia 18px text with 22px line height. Hard maximum 90 characters.\n\n"
-            "Create main_takeaway: One polished paragraph for the flashcard summary. "
-            "Lead with the actual news development, then add the key context. Do not "
+            "Create main_takeaway: One polished paragraph for the flashcard body. "
+            "Use 2 to 3 complete sentences. Lead with the actual news development, "
+            "then add concrete context, stakes, or the next thing to watch. Do not "
             "repeat the headline verbatim. Do not include the source name unless it "
-            "is central to the story. Use complete sentences with no cutoff-style "
-            "ending. Target 35 to 48 words and fit 7 visual lines in a 300px column "
-            "using system sans 16px text with 23px line height. Hard maximum 320 "
-            "characters.\n\n"
-            "Create full_summary: A longer 3 to 5 sentence summary for future detail "
-            "views. Keep it factual and complete.\n\n"
+            "is central to the story. Avoid filler and do not invent facts when the "
+            "source text is thin. Target 48 to 62 words and fit 9 visual lines in a "
+            "300px column using system sans 16px text with 23px line height. Hard "
+            "maximum 430 characters.\n\n"
+            "Create full_summary: A longer 4 to 6 sentence summary for future detail "
+            "views. Keep it factual, specific, and complete.\n\n"
             "Create why_it_matters: One sentence of 12 to 22 words explaining a "
             "concrete consequence. Use an empty string if there is no meaningful "
             "consequence.\n\n"
@@ -188,6 +196,7 @@ class ArticleSummarizer:
         raise RuntimeError("OpenAI request failed without an error")
 
     def _fallback_summary(self, *, title: str, text: str) -> dict[str, Any]:
+        # avoid repeating the headline as the whole summary
         title_key = self._normalize_for_compare(title)
         sentences = self._split_sentences(text)
         useful_sentences = []
@@ -222,10 +231,19 @@ class ArticleSummarizer:
         supporting_lines: list[str],
         model_name: str,
     ) -> dict[str, Any]:
+        # final shaping enforces mobile card limits even when model output drifts
         cleaned_headline = self._fit_headline(display_headline or title)
+        main_candidate = " ".join(main_takeaway.split())
+        full_candidate = " ".join((full_summary or "").split())
+        if len(main_candidate.split()) < self.SUMMARY_MIN_WORDS and len(
+            full_candidate.split()
+        ) > len(main_candidate.split()):
+            # use the fuller field when the model underfills the card body
+            main_candidate = full_candidate
+
         cleaned_main = self._fit_paragraph(
-            self._drop_truncated_sentences(" ".join(main_takeaway.split())),
-            max_chars=320,
+            self._drop_truncated_sentences(main_candidate),
+            max_chars=self.SUMMARY_MAX_CHARS,
             max_lines=self.SUMMARY_MAX_LINES,
         )
         cleaned_full = self._drop_truncated_sentences(
@@ -385,12 +403,14 @@ class ArticleSummarizer:
             issues.append("main_takeaway does not end as a complete sentence")
         if "..." in main or "…" in main:
             issues.append("main_takeaway uses ellipses")
-        if len(main) > 320:
-            issues.append("main_takeaway exceeds 320 characters")
+        if len(main) > self.SUMMARY_MAX_CHARS:
+            issues.append(f"main_takeaway exceeds {self.SUMMARY_MAX_CHARS} characters")
         if summary_lines > self.SUMMARY_MAX_LINES:
             issues.append(f"main_takeaway wraps to {summary_lines} lines")
-        if summary_words > 48:
-            issues.append("main_takeaway exceeds 48 words")
+        if summary_words < self.SUMMARY_MIN_WORDS:
+            issues.append(f"main_takeaway is under {self.SUMMARY_MIN_WORDS} words")
+        if summary_words > self.SUMMARY_MAX_WORDS:
+            issues.append(f"main_takeaway exceeds {self.SUMMARY_MAX_WORDS} words")
         if why:
             why_words = len(why.split())
             if why_words < 12 or why_words > 22 or not re.search(r"[.!?]$", why):
@@ -405,7 +425,7 @@ class ArticleSummarizer:
         )
         summary["main_takeaway"] = self._fit_paragraph(
             self._drop_truncated_sentences(str(summary.get("main_takeaway") or "")),
-            max_chars=320,
+            max_chars=self.SUMMARY_MAX_CHARS,
             max_lines=self.SUMMARY_MAX_LINES,
         )
         summary["summary_text"] = self._drop_truncated_sentences(

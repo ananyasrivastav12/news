@@ -1,3 +1,4 @@
+# updates learned preferences from user interactions
 from __future__ import annotations
 
 from collections.abc import Iterable

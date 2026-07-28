@@ -1,79 +1,139 @@
-# Personalized News Summarizer
+# The Edit
 
-Personalized News Summarizer is a beta-ready news pipeline and mobile reader. The backend ingests headlines, deduplicates and summarizes articles, builds personalized 50-card feed editions, and logs user interactions for later ranking work. A private admin dashboard controls pipeline runs, and an Expo app gives testers an email/password beta flow.
+The Edit is a personalized mobile news briefing app with an operator dashboard.
+It ingests fresh news, summarizes articles into compact cards, ranks editions for
+each reader, and gives an admin a practical control room for running and
+inspecting the content pipeline.
 
-## Architecture
+The project is built as a recruiter-friendly full-stack product: a React Native
+reader app, a FastAPI data pipeline, background workers, and a private React
+dashboard.
+
+## User App
+
+The mobile app is the reader-facing experience. Testers sign in with a beta
+email/password, choose interests, and read swipeable news cards organized into
+daily editions.
+
+What the app supports:
+
+- Email/password beta login with persisted session state.
+- Interest selection by topics and regions.
+- Personalized editions: Morning Brief, Midday Catch-Up, and Daily Digest.
+- Swipeable story cards with headline, summary, image, source, and open action.
+- Interaction signals: viewed, liked, disliked, saved, clicked, and dwell time.
+- Saved stories screen for revisiting articles later.
+
+## Admin Dashboard
+
+The dashboard is the operator-facing experience. It is intentionally private and
+requires an admin email listed in `ADMIN_EMAILS`.
+
+What the dashboard supports:
+
+- Pipeline controls for ingestion, summarization, and full content refreshes.
+- Health overview for article supply, summaries, embeddings, users, and coverage.
+- Article pool filters by market, category, source, date, image status, and user signals.
+- User management for creating beta accounts.
+- Per-user feed inspection with ranking reasons, card state, and embedding status.
+- Recent pipeline run history with fetched, inserted, summarized, embedded, and failure counts.
+
+## How It Works
 
 ```mermaid
 flowchart LR
   A["NewsAPI"] --> B["FastAPI ingestion"]
   B --> C["Postgres article pool"]
-  C --> D["OpenAI or local fallback summaries"]
-  D --> E["Feed generation and ranking"]
-  E --> F["Expo / React Native app"]
-  F --> G["Interaction logs"]
+  C --> D["Summarizer + embeddings"]
+  D --> E["Feed ranking"]
+  E --> F["Expo mobile app"]
+  F --> G["Reader signals"]
   G --> E
   H["Admin dashboard"] --> B
   H --> D
   H --> E
   I["Redis + Celery"] --> B
   I --> D
-  I --> E
 ```
 
-## Project Layout
+1. The backend fetches recent articles by country and category.
+2. Articles are cleaned, deduplicated, categorized, and stored in Postgres.
+3. Pending articles are summarized with OpenAI when configured, with a local fallback for development.
+4. Embeddings are stored when available for semantic ranking.
+5. Feeds are ranked per user and persisted as stable daily editions.
+6. Reader interactions are logged and used to improve future ranking.
 
-- `backend/`: FastAPI API, SQLAlchemy models, Alembic migrations, Celery tasks, NewsAPI/OpenAI pipeline, admin endpoints.
-- `dashboard/`: Vite/React admin dashboard for overview metrics, pipeline runs, article pool, users, and schedules.
-- `frontend/`: Expo/React Native mobile app for account setup, interests, feed cards, saved articles, and interaction logging.
-- `docs/`: architecture, beta runbook, deployment, quota strategy, and ranking/data notes.
+## Tech Stack
 
-## Screenshots
+- **Mobile:** Expo, React Native, TypeScript, Expo Router.
+- **Dashboard:** React, TypeScript, Vite.
+- **Backend:** FastAPI, SQLAlchemy, Alembic, Pydantic.
+- **Jobs:** Celery, Redis.
+- **Data:** Postgres.
+- **AI/content:** NewsAPI, OpenAI summaries and embeddings, deterministic fallback summaries.
+- **Tests:** Pytest for backend contracts, ranking, feed editions, and summarizer behavior.
 
-Add screenshots before sharing with recruiters:
+## Repository Layout
 
-- `docs/assets/mobile-onboarding.png`
-- `docs/assets/mobile-feed.png`
-- `docs/assets/admin-overview.png`
-- `docs/assets/pipeline-runs.png`
+```text
+backend/    FastAPI API, database models, Celery tasks, ranking, summarization
+frontend/   Expo mobile reader app
+dashboard/  React admin dashboard
+docs/       Extra technical and operating notes
+```
 
-Recommended demo assets: a 60-90 second screen recording showing account setup, 100-card feed, admin overview, and pipeline runs.
+## Visual Overview
+
+The diagram above shows the full product loop: operator-run ingestion and
+summarization, persisted ranked editions, a mobile reader, and feedback signals
+that feed future ranking. Product screenshots should be added under
+`docs/assets/` when final app branding is ready.
+
+Recommended screenshot set:
+
+- Mobile briefing
+- Saved stories
+- Admin overview
+- User feed inspector
 
 ## Local Setup
 
+Clone the repo and create env files:
+
 ```bash
-cd /Users/ananyasrivastava/Desktop/Projects/news
 cp backend/.env.example backend/.env
 cp dashboard/.env.example dashboard/.env
 cp frontend/.env.example frontend/.env
 ```
 
-Fill `backend/.env` with local-only secrets. Do not commit real `.env` files.
-
-## Backend Setup
+Fill `backend/.env` with local secrets. At minimum:
 
 ```bash
-cd /Users/ananyasrivastava/Desktop/Projects/news/backend
+SECRET_KEY="dev-change-me"
+NEWS_API_KEY="your_newsapi_key"
+ADMIN_EMAILS="admin@example.com"
+ADMIN_BOOTSTRAP_EMAIL="admin@example.com"
+ADMIN_BOOTSTRAP_PASSWORD="ChangeMe123"
+ENABLE_PUBLIC_SIGNUP="false"
+```
+
+The bootstrap admin user is created or updated when the backend starts.
+
+## Run The Backend
+
+```bash
+cd backend
 docker compose up --build -d
 docker compose exec web alembic upgrade head
 docker compose exec web python app/db/scripts/initial_data.py
 ```
 
-Create an admin user whose email is in `ADMIN_EMAILS`:
+Useful local API URLs:
 
-```bash
-curl -X POST http://localhost:8000/api/users/ \
-  -H "Content-Type: application/json" \
-  -d '{"email":"your@email.com","password":"replace-this"}'
-```
+- API health: `http://localhost:8000/health`
+- API docs: `http://localhost:8000/docs`
 
-## Dashboard Setup
-
-```bash
-cd /Users/ananyasrivastava/Desktop/Projects/news
-npm --prefix dashboard install
-npm --prefix dashboard run dev
-```
+## Run The Dashboard
 
 Set `dashboard/.env`:
 
@@ -81,85 +141,79 @@ Set `dashboard/.env`:
 VITE_API_BASE_URL="http://localhost:8000"
 ```
 
-Use `Full pipeline` and `Ingest` only when you intend to spend NewsAPI/OpenAI quota.
-
-## Expo App Setup
+Then start it:
 
 ```bash
-cd /Users/ananyasrivastava/Desktop/Projects/news
-npm --prefix frontend install
-npm --prefix frontend run start
+npm --prefix dashboard install
+npm --prefix dashboard run dev
 ```
 
-Set `frontend/.env` for local or deployed API:
+Sign in with the bootstrap admin email/password. Use Control -> Beta User to
+create tester accounts. Public signup is disabled by default.
+
+## Run The Mobile App
+
+Set `frontend/.env`:
 
 ```bash
 EXPO_PUBLIC_API_BASE_URL="http://localhost:8000"
 ```
 
-For beta builds, set it to your deployed HTTPS backend, for example:
+Then start Expo:
 
 ```bash
-EXPO_PUBLIC_API_BASE_URL="https://your-api.example.com"
+npm --prefix frontend install
+npm --prefix frontend run start
 ```
 
-Google login is disabled unless public Google OAuth client IDs are configured. Email/password is the recommended controlled beta path.
+For a physical-phone beta, build with `EXPO_PUBLIC_API_BASE_URL` pointing to a
+deployed HTTPS backend or stable tunnel.
 
-## Beta Access Flow
+## Testing
 
-1. Tester fills a Google Form with name, email, platform, country, interests, and consent for usage signal collection.
-2. Operator creates credentials through `/api/users/` or a small CSV/script workflow.
-3. Operator emails the install link, email, password, known limitations, feedback form, and privacy note.
-4. Tester logs in, picks interests, receives up to 50 personalized cards per edition, and uses the app.
-5. Interactions are stored for later ranking analysis.
+Backend:
 
-CSV format for manual beta account creation:
-
-```csv
-email,password
-tester@example.com,replace-this
+```bash
+cd backend
+env PYTHONPATH=. ./.venv/bin/pytest
 ```
 
-## Deployment Notes
+Frontend:
 
-Recommended minimal beta deployment:
+```bash
+cd frontend
+npm run lint
+npx tsc --noEmit
+```
 
-- FastAPI API service
-- Postgres database
-- Redis
-- Celery worker
-- Optional Celery beat, or manual pipeline runs from the dashboard
-- Admin dashboard protected by backend login and `ADMIN_EMAILS`
-- Expo/EAS build with `EXPO_PUBLIC_API_BASE_URL` pointing to the deployed API
+Dashboard:
 
-Good providers: Render, Railway, Fly.io, or a VPS. See [docs/DEPLOYMENT.md](/Users/ananyasrivastava/Desktop/Projects/news/docs/DEPLOYMENT.md).
+```bash
+cd dashboard
+npm run build
+```
 
-## Cost And Quota Strategy
+Note: Vite may warn if local Node is below its preferred version. The project
+should be run with Node 20.19+ for dashboard builds.
 
-Beta defaults are intentionally bounded:
+## Why This Project Is Useful
 
-- `NEWS_API_PAGE_SIZE=100`
-- `NEWS_DAILY_ARTICLE_TARGET=250`
-- `ARTICLE_POOL_LIMIT=1000`
-- `FEED_SIZE=50`
-- `FEED_EDITION_SIZE=100`
-- `MAX_FEED_ITEMS=500`
-- `OPENAI_DAILY_SUMMARY_LIMIT=250`
+The Edit demonstrates a realistic product loop rather than a static demo:
 
-Run ingestion/summarization manually during beta unless you are actively monitoring quotas. See [docs/COST_AND_QUOTAS.md](/Users/ananyasrivastava/Desktop/Projects/news/docs/COST_AND_QUOTAS.md).
+- It has a user-facing app and an operator-facing dashboard.
+- It handles background jobs, third-party APIs, persistence, auth, and admin tooling.
+- It turns messy external news data into a constrained mobile experience.
+- It records feedback signals that can support future ranking and ML experiments.
+- It is designed for a controlled beta, with quota limits and private admin access.
 
-## Known Limitations
+## Current Limitations
 
-- NewsAPI Developer plan is not suitable for public production traffic.
-- Ranking is intentionally heuristic until enough interaction data exists.
-- Admin dashboard should be deployed privately or behind auth/network restrictions.
-- Google OAuth requires platform-specific client IDs before enabling.
-- Privacy policy and retention language should be finalized before wider public use.
+- NewsAPI plan limits make this suitable for controlled beta use, not public production traffic.
+- Ranking is heuristic until there is enough interaction data for stronger personalization.
+- Product screenshots and final app branding should be added before a polished GitHub share.
+- Google login is intentionally disabled unless OAuth client IDs are configured.
 
-## More Docs
+## Extra Notes
 
-- [Architecture](/Users/ananyasrivastava/Desktop/Projects/news/docs/ARCHITECTURE.md)
-- [Beta Runbook](/Users/ananyasrivastava/Desktop/Projects/news/docs/BETA_RUNBOOK.md)
-- [Deployment](/Users/ananyasrivastava/Desktop/Projects/news/docs/DEPLOYMENT.md)
-- [Cost and Quotas](/Users/ananyasrivastava/Desktop/Projects/news/docs/COST_AND_QUOTAS.md)
-- [Data and Ranking](/Users/ananyasrivastava/Desktop/Projects/news/docs/DATA_AND_RANKING.md)
+See [docs/EXTRA_INFORMATION.md](docs/EXTRA_INFORMATION.md) for operating model,
+ranking details, quota controls, deployment notes, and future improvements.

@@ -1,3 +1,4 @@
+# initial migration for users, interests, articles, summaries, and flashcards
 """initial
 
 Revision ID: b0b824e01c62

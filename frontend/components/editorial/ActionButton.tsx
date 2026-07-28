@@ -1,3 +1,4 @@
+// editorial icon button used for story actions
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
 import { Pressable, StyleSheet, ViewStyle } from 'react-native';

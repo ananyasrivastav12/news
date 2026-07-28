@@ -1,3 +1,4 @@
+// profile screen for account and quick preference toggles
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { useRouter } from 'expo-router';

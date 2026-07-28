@@ -1,3 +1,4 @@
+# embedding helpers for semantic ranking
 from __future__ import annotations
 
 from math import sqrt
@@ -13,6 +14,7 @@ class EmbeddingService:
         self.model = settings.OPENAI_EMBEDDING_MODEL
 
     async def embed_text(self, text: str) -> list[float] | None:
+        # no embedding is better than failing the article pipeline
         cleaned = " ".join((text or "").split())
         if not cleaned or not self.api_key:
             return None
@@ -42,6 +44,7 @@ class EmbeddingService:
 
 
 def cosine_similarity(left: list[float] | None, right: list[float] | None) -> float:
+    # cosine compares direction, not text length
     if not left or not right or len(left) != len(right):
         return 0.0
     numerator = sum(a * b for a, b in zip(left, right))
@@ -53,6 +56,7 @@ def cosine_similarity(left: list[float] | None, right: list[float] | None) -> fl
 
 
 def average_embeddings(vectors: list[list[float]]) -> list[float] | None:
+    # averaging positives is a simple user taste vector
     if not vectors:
         return None
     dimension = len(vectors[0])

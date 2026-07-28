@@ -1,5 +1,4 @@
-# In app/api/endpoints/login.py
-
+# login routes for password and optional google auth
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status

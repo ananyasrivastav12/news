@@ -1,3 +1,4 @@
+# migration for interaction signals and recommendation tables
 """recommendation pipeline
 
 Revision ID: 7a2b8c0d1e4f

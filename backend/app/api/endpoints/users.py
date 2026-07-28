@@ -1,5 +1,6 @@
 # In app/api/endpoints/users.py
 
+# user account and profile summary routes
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_db
 from app.core.config import settings
 from app.crud import interest as crud_interest
-from app.crud import user as crud_user  # <--- CHANGED
+from app.crud import user as crud_user
 from app.db import model as db_model
 from app.schemas import interest as interest_schema
 from app.schemas import user as user_schema

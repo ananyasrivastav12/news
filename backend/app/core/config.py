@@ -1,4 +1,4 @@
-# app/core/config.py
+# backend settings loaded from environment variables
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 

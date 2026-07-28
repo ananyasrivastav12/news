@@ -1,4 +1,4 @@
-// app/(tabs)/_layout.tsx
+// bottom tab shell for the reader app
 import { Tabs } from 'expo-router';
 import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
