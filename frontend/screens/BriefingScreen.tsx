@@ -87,6 +87,8 @@ export default function BriefingScreen() {
   const cardOpenedAt = useRef<number>(Date.now());
   const animatingRef = useRef(false);
   const hasLoadedFeedRef = useRef(false);
+  const feedLoadingRef = useRef(false);
+  const feedRequestIdRef = useRef(0);
   const swipe = useRef(new Animated.ValueXY()).current;
 
   const currentItem = feed[currentIndex] ?? null;
@@ -128,19 +130,27 @@ export default function BriefingScreen() {
   const loadFeed = useCallback(
     async (forceRefresh = false) => {
       if (!accessToken) {
+        feedRequestIdRef.current += 1;
+        feedLoadingRef.current = false;
         hasLoadedFeedRef.current = false;
         setFeed([]);
         setCurrentIndex(0);
         setEditions([]);
         setSelectedFeedDate(null);
         setSelectedEditionType(null);
+        setLoading(false);
         return;
       }
+      if (feedLoadingRef.current) return;
 
+      const requestId = feedRequestIdRef.current + 1;
+      feedRequestIdRef.current = requestId;
+      feedLoadingRef.current = true;
       setLoading(true);
       setRefreshFailure(null);
       try {
         const editionResponse = await fetchFeedEditions(apiBaseUrl, accessToken, marketTimezone);
+        if (feedRequestIdRef.current !== requestId) return;
         setEditions(editionResponse.editions);
         const targetFeedDate =
           selectedFeedDateRef.current ?? editionResponse.selected_feed_date;
@@ -160,6 +170,7 @@ export default function BriefingScreen() {
           editionType: targetEditionType,
           marketTimezone,
         });
+        if (feedRequestIdRef.current !== requestId) return;
         const firstUnreadIndex = items.findIndex(
           (item) => !item.is_viewed && !viewedArticleIdsRef.current.has(item.article.id)
         );
@@ -184,6 +195,7 @@ export default function BriefingScreen() {
         hasLoadedFeedRef.current = true;
         resetSwipe();
       } catch (error) {
+        if (feedRequestIdRef.current !== requestId) return;
         const message = error instanceof Error ? error.message : 'Unable to load your briefing.';
         if (isCredentialError(message)) {
           clearSession();
@@ -196,7 +208,10 @@ export default function BriefingScreen() {
             : 'The briefing could not refresh. Try again in a moment.'
         );
       } finally {
-        setLoading(false);
+        if (feedRequestIdRef.current === requestId) {
+          feedLoadingRef.current = false;
+          setLoading(false);
+        }
       }
     },
     [accessToken, apiBaseUrl, clearSession, marketTimezone, resetSwipe, router]
@@ -216,6 +231,17 @@ export default function BriefingScreen() {
   const selectEdition = useCallback(
     async (edition: FeedEdition) => {
       if (!accessToken) return;
+      if (feedLoadingRef.current) return;
+      if (
+        edition.feed_date === selectedFeedDateRef.current &&
+        edition.edition_type === selectedEditionTypeRef.current
+      ) {
+        return;
+      }
+
+      const requestId = feedRequestIdRef.current + 1;
+      feedRequestIdRef.current = requestId;
+      feedLoadingRef.current = true;
       setLoading(true);
       setRefreshFailure(null);
       try {
@@ -224,6 +250,7 @@ export default function BriefingScreen() {
           editionType: edition.edition_type,
           marketTimezone,
         });
+        if (feedRequestIdRef.current !== requestId) return;
         const firstUnreadIndex = items.findIndex(
           (item) => !item.is_viewed && !viewedArticleIdsRef.current.has(item.article.id)
         );
@@ -235,9 +262,13 @@ export default function BriefingScreen() {
         hasLoadedFeedRef.current = true;
         resetSwipe();
       } catch (error) {
+        if (feedRequestIdRef.current !== requestId) return;
         setRefreshFailure(error instanceof Error ? error.message : 'Unable to load that edition.');
       } finally {
-        setLoading(false);
+        if (feedRequestIdRef.current === requestId) {
+          feedLoadingRef.current = false;
+          setLoading(false);
+        }
       }
     },
     [accessToken, apiBaseUrl, marketTimezone, resetSwipe]
@@ -455,7 +486,14 @@ export default function BriefingScreen() {
           <View style={[styles.headerCopy, { width: chromeWidth }]}>
             <View style={styles.brandRow}>
               <Masthead>THE EDIT</Masthead>
-              <Pressable accessibilityRole="button" accessibilityLabel="Refresh briefing" style={styles.refreshButton} onPress={() => void loadFeed(true)}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Refresh briefing"
+                accessibilityState={{ disabled: loading }}
+                disabled={loading}
+                style={[styles.refreshButton, loading && styles.disabledControl]}
+                onPress={() => void loadFeed(true)}
+              >
                 <Ionicons name="refresh" size={23} color={colors.accent} />
               </Pressable>
             </View>
@@ -463,7 +501,13 @@ export default function BriefingScreen() {
           </View>
         </View>
         <View style={[styles.selectorWrap, { width: chromeWidth }]}>
-          <EditionSelector editions={editions} selectedFeedDate={selectedFeedDate} selectedEditionType={selectedEditionType} onSelect={(edition) => void selectEdition(edition)} />
+          <EditionSelector
+            editions={editions}
+            selectedFeedDate={selectedFeedDate}
+            selectedEditionType={selectedEditionType}
+            disabled={loading}
+            onSelect={(edition) => void selectEdition(edition)}
+          />
         </View>
         <View style={[styles.emptyWrap, { width: chromeWidth }]}>
           <EmptyState
@@ -504,7 +548,14 @@ export default function BriefingScreen() {
         <View style={[styles.headerCopy, { width: chromeWidth }]}>
           <View style={styles.brandRow}>
             <Masthead>THE EDIT</Masthead>
-            <Pressable accessibilityRole="button" accessibilityLabel="Refresh briefing" style={styles.refreshButton} onPress={() => void loadFeed(true)}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Refresh briefing"
+              accessibilityState={{ disabled: loading }}
+              disabled={loading}
+              style={[styles.refreshButton, loading && styles.disabledControl]}
+              onPress={() => void loadFeed(true)}
+            >
               {loading ? <ActivityIndicator color={colors.accent} /> : <Ionicons name="refresh" size={22} color={colors.accent} />}
             </Pressable>
           </View>
@@ -513,7 +564,13 @@ export default function BriefingScreen() {
       </View>
 
       <View style={[styles.selectorWrap, { width: chromeWidth }]}>
-        <EditionSelector editions={editions} selectedFeedDate={selectedFeedDate} selectedEditionType={selectedEditionType} onSelect={(edition) => void selectEdition(edition)} />
+        <EditionSelector
+          editions={editions}
+          selectedFeedDate={selectedFeedDate}
+          selectedEditionType={selectedEditionType}
+          disabled={loading}
+          onSelect={(edition) => void selectEdition(edition)}
+        />
       </View>
 
       {refreshFailure ? (
@@ -592,6 +649,9 @@ const styles = StyleSheet.create({
     height: layout.iconButton,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  disabledControl: {
+    opacity: 0.45,
   },
   selectorWrap: {
     alignSelf: 'center',

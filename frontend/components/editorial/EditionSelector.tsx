@@ -23,6 +23,7 @@ type EditionSelectorProps = {
   editions: FeedEdition[];
   selectedFeedDate: string | null;
   selectedEditionType: FeedEditionType | null;
+  disabled?: boolean;
   onSelect: (edition: FeedEdition) => void;
 };
 
@@ -40,6 +41,7 @@ export function EditionSelector({
   editions,
   selectedFeedDate,
   selectedEditionType,
+  disabled,
   onSelect,
 }: EditionSelectorProps) {
   if (editions.length === 0) return null;
@@ -55,23 +57,31 @@ export function EditionSelector({
         const selected =
           selectedEditionType === editionType && selectedFeedDate === edition?.feed_date;
         const available = Boolean(edition);
+        const itemDisabled = disabled || !available;
         return (
           <React.Fragment key={editionType}>
             <Pressable
               accessibilityRole="tab"
-              accessibilityState={{ selected, disabled: !available }}
+              accessibilityState={{ selected, disabled: itemDisabled }}
               accessibilityLabel={`${EDITION_LABELS[editionType]} edition`}
-              disabled={!available}
+              disabled={itemDisabled}
               onPress={() => edition && onSelect(edition)}
               style={({ pressed }) => [
                 styles.item,
+                itemDisabled && styles.disabledItem,
                 pressed && styles.pressed,
               ]}
             >
               <Ionicons
                 name={EDITION_ICONS[editionType]}
                 size={18}
-                color={selected ? colors.accent : colors.deepBlack}
+                color={
+                  itemDisabled
+                    ? colors.inkMuted
+                    : selected
+                      ? colors.accent
+                      : colors.deepBlack
+                }
               />
               <Metadata style={[styles.label, selected && styles.activeLabel]}>
                 {EDITION_LABELS[editionType]}
@@ -99,6 +109,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     gap: 1,
+  },
+  disabledItem: {
+    opacity: 0.45,
   },
   label: {
     color: colors.inkSecondary,
