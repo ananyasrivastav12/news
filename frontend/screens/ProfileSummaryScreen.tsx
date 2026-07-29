@@ -17,12 +17,20 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Masthead,
   Metadata,
-  ScreenTitle,
   SectionLabel,
 } from '@/components/editorial/Typography';
 import { useAppSession } from '@/context/AppSessionContext';
-import { colors, layout, radius, spacing } from '@/design/tokens';
-import { Interest, fetchInterests, fetchMyInterests, updateInterests } from '@/lib/api';
+import { colors, layout, radius, shadows, spacing } from '@/design/tokens';
+import {
+  FeedEdition,
+  Interest,
+  ProfileSummary,
+  fetchFeedEditions,
+  fetchInterests,
+  fetchMyInterests,
+  fetchProfileSummary,
+  updateInterests,
+} from '@/lib/api';
 
 const SECTIONS = [
   'Business',
@@ -45,16 +53,40 @@ function selectedCountLabel(count: number) {
   return `${count} ${count === 1 ? 'selected' : 'selected'}`;
 }
 
+function formatCount(value: number) {
+  return value.toLocaleString();
+}
+
+function getMarketTimezone() {
+  const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (resolved === 'Asia/Kolkata' || resolved === 'Asia/Calcutta') return 'Asia/Kolkata';
+  return 'America/New_York';
+}
+
+function latestReadyEdition(editions: FeedEdition[]) {
+  return editions
+    .filter((edition) => edition.total > 0)
+    .sort(
+      (left, right) =>
+        Date.parse(right.expected_publish_at) - Date.parse(left.expected_publish_at)
+    )[0];
+}
+
 export default function ProfileSummaryScreen() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const { accessToken, apiBaseUrl, clearSession, sessionReady, userEmail } = useAppSession();
   const [interests, setInterests] = useState<Interest[]>([]);
   const [selectedInterestIds, setSelectedInterestIds] = useState<number[]>([]);
+  const [profileSummary, setProfileSummary] = useState<ProfileSummary | null>(null);
+  const [latestFeedStats, setLatestFeedStats] = useState<{ total: number; unread: number } | null>(
+    null
+  );
   const [loading, setLoading] = useState(false);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const marketTimezone = useMemo(() => getMarketTimezone(), []);
   const cardWidth = Math.min(width - 56, 360);
   const chromeWidth = Math.min(width - 40, cardWidth + 16);
   const sectionChipWidth = (chromeWidth - spacing.sm) / 2;
@@ -88,24 +120,40 @@ export default function ProfileSummaryScreen() {
   const selectedAreasCount = areaInterests.filter((interest) =>
     selectedInterestIds.includes(interest.id)
   ).length;
+  const signalCounts = profileSummary?.signal_counts;
+  const todayFeed = profileSummary?.today_feed;
+  const feedStats = latestFeedStats ?? todayFeed;
 
   const loadProfile = useCallback(async () => {
     if (!accessToken) return;
     setLoading(true);
     setError(null);
     try {
-      const [allInterests, mine] = await Promise.all([
+      const [allInterests, mine, nextSummary, editionResponse] = await Promise.all([
         fetchInterests(apiBaseUrl),
         fetchMyInterests(apiBaseUrl, accessToken),
+        fetchProfileSummary(apiBaseUrl, accessToken),
+        fetchFeedEditions(apiBaseUrl, accessToken, marketTimezone).catch(() => null),
       ]);
       setInterests(allInterests);
       setSelectedInterestIds(mine.map((interest) => interest.id));
+      setProfileSummary(nextSummary);
+      const latestEdition = editionResponse
+        ? latestReadyEdition(editionResponse.editions)
+        : null;
+      setLatestFeedStats(
+        latestEdition
+          ? { total: latestEdition.total, unread: latestEdition.unread }
+          : null
+      );
     } catch {
+      setProfileSummary(null);
+      setLatestFeedStats(null);
       setError('Your profile could not be refreshed.');
     } finally {
       setLoading(false);
     }
-  }, [accessToken, apiBaseUrl]);
+  }, [accessToken, apiBaseUrl, marketTimezone]);
 
   useFocusEffect(
     useCallback(() => {
@@ -132,6 +180,9 @@ export default function ProfileSummaryScreen() {
     try {
       const saved = await updateInterests(apiBaseUrl, accessToken, nextIds);
       setSelectedInterestIds(saved.map((item) => item.id));
+      setProfileSummary((current) =>
+        current ? { ...current, interests: saved.map((item) => item.name) } : current
+      );
       AccessibilityInfo.announceForAccessibility(
         `${interest.name} ${selected ? 'removed' : 'selected'}`
       );
@@ -192,7 +243,6 @@ export default function ProfileSummaryScreen() {
         <View style={styles.header}>
           <Masthead>THE EDIT</Masthead>
           <View style={styles.rule} />
-          <ScreenTitle style={styles.screenTitle}>Profile</ScreenTitle>
         </View>
 
         {error ? (
@@ -201,12 +251,21 @@ export default function ProfileSummaryScreen() {
           </View>
         ) : null}
 
-        <View style={styles.accountBlock}>
-          <SectionLabel style={styles.sectionLabel}>Account</SectionLabel>
-          <View style={styles.accountRow}>
-            <Metadata numberOfLines={1} style={styles.email}>
-              {userEmail || 'Signed in'}
-            </Metadata>
+        <View style={styles.readerPanel}>
+          <View style={styles.readerTop}>
+            <View style={styles.avatar}>
+              <Ionicons name="person-circle-outline" size={30} color={colors.accent} />
+            </View>
+            <View style={styles.readerCopy}>
+              <SectionLabel style={styles.sectionLabel}>Reader profile</SectionLabel>
+              <Metadata numberOfLines={1} style={styles.email}>
+                {userEmail || 'Signed in'}
+              </Metadata>
+              <Metadata style={styles.profileLine}>
+                {selectedInterestIds.length} selected{' '}
+                {selectedInterestIds.length === 1 ? 'interest' : 'interests'}
+              </Metadata>
+            </View>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Sign out"
@@ -216,8 +275,31 @@ export default function ProfileSummaryScreen() {
                 router.replace('/login');
               }}
             >
-              <Ionicons name="log-out-outline" size={22} color={colors.accent} />
+              <Ionicons name="log-out-outline" size={21} color={colors.accent} />
             </Pressable>
+          </View>
+
+          <View style={styles.statsGrid}>
+            <ProfileStat
+              icon="bookmark-outline"
+              label="Saved"
+              value={formatCount(signalCounts?.saved ?? 0)}
+            />
+            <ProfileStat
+              icon="newspaper-outline"
+              label="Read"
+              value={formatCount(signalCounts?.viewed ?? 0)}
+            />
+            <ProfileStat
+              icon="thumbs-up-outline"
+              label="Liked"
+              value={formatCount(signalCounts?.liked ?? 0)}
+            />
+            <ProfileStat
+              icon="time-outline"
+              label="Unread"
+              value={formatCount(feedStats?.unread ?? 0)}
+            />
           </View>
         </View>
 
@@ -243,6 +325,28 @@ export default function ProfileSummaryScreen() {
         </PreferenceGroup>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function ProfileStat({
+  icon,
+  label,
+  value,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  value: string;
+}) {
+  return (
+    <View style={styles.statCell}>
+      <Ionicons name={icon} size={18} color={colors.accent} />
+      <Metadata numberOfLines={1} style={styles.statValue}>
+        {value}
+      </Metadata>
+      <Metadata numberOfLines={1} style={styles.statLabel}>
+        {label}
+      </Metadata>
+    </View>
   );
 }
 
@@ -290,12 +394,6 @@ const styles = StyleSheet.create({
     marginTop: spacing.xs,
     marginBottom: spacing.md,
   },
-  screenTitle: {
-    alignSelf: 'center',
-    fontSize: 28,
-    lineHeight: 32,
-    textAlign: 'center',
-  },
   banner: {
     borderWidth: 1,
     borderColor: colors.error,
@@ -304,35 +402,78 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentSoft,
   },
   errorText: { color: colors.error },
-  accountBlock: {
-    gap: spacing.sm,
-    paddingBottom: spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-  },
   sectionLabel: { color: colors.accent },
-  accountRow: {
-    minHeight: layout.minTouch,
+  readerPanel: {
+    gap: spacing.md,
+    borderWidth: 1,
+    borderColor: 'rgba(21, 20, 18, 0.16)',
+    borderRadius: radius.card + 2,
+    backgroundColor: colors.surfacePrimary,
+    padding: spacing.md,
+    ...shadows.card,
+  },
+  readerTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: spacing.md,
+    gap: spacing.sm,
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    backgroundColor: colors.accentSoft,
+  },
+  readerCopy: {
+    flex: 1,
+    minWidth: 0,
   },
   email: {
-    flex: 1,
-    color: colors.inkSecondary,
+    color: colors.inkPrimary,
     fontSize: 16,
     lineHeight: 22,
+    fontWeight: '600',
+  },
+  profileLine: {
+    color: colors.inkSecondary,
+    fontSize: 13,
+    lineHeight: 18,
   },
   signOutButton: {
-    width: layout.minTouch,
-    height: layout.minTouch,
+    width: 38,
+    height: 38,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: 999,
     backgroundColor: colors.surfacePrimary,
+  },
+  statsGrid: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.md,
+  },
+  statCell: {
+    flex: 1,
+    alignItems: 'center',
+    gap: spacing.xxs,
+  },
+  statValue: {
+    color: colors.inkPrimary,
+    fontSize: 18,
+    lineHeight: 22,
+    fontWeight: '700',
+  },
+  statLabel: {
+    color: colors.inkSecondary,
+    fontSize: 11,
+    lineHeight: 14,
+    textTransform: 'uppercase',
   },
   preferenceGroup: {
     gap: spacing.md,

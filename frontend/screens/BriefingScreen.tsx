@@ -23,7 +23,7 @@ import { EditionSelector } from '@/components/editorial/EditionSelector';
 import { StoryCard } from '@/components/editorial/StoryCard';
 import { Masthead, Metadata } from '@/components/editorial/Typography';
 import { useAppSession } from '@/context/AppSessionContext';
-import { colors, layout, motion, spacing } from '@/design/tokens';
+import { colors, layout, motion, radius, spacing } from '@/design/tokens';
 import { feedItemToBriefingStory } from '@/lib/briefingStory';
 import {
   FeedEdition,
@@ -32,6 +32,7 @@ import {
   deleteInteraction,
   fetchFeed,
   fetchFeedEditions,
+  fetchMyInterests,
   logInteraction,
 } from '@/lib/api';
 
@@ -73,6 +74,7 @@ export default function BriefingScreen() {
   const [editions, setEditions] = useState<FeedEdition[]>([]);
   const [selectedFeedDate, setSelectedFeedDate] = useState<string | null>(null);
   const [selectedEditionType, setSelectedEditionType] = useState<FeedEditionType | null>(null);
+  const [hasSavedInterests, setHasSavedInterests] = useState<boolean | null>(null);
   const selectedFeedDateRef = useRef<string | null>(null);
   const selectedEditionTypeRef = useRef<FeedEditionType | null>(null);
   const marketTimezone = useMemo(() => getMarketTimezone(), []);
@@ -89,13 +91,17 @@ export default function BriefingScreen() {
   const hasLoadedFeedRef = useRef(false);
   const feedLoadingRef = useRef(false);
   const feedRequestIdRef = useRef(0);
+  const interestSignatureRef = useRef<string | null>(null);
   const swipe = useRef(new Animated.ValueXY()).current;
 
   const currentItem = feed[currentIndex] ?? null;
   const story = currentItem ? feedItemToBriefingStory(currentItem) : null;
+  const showInterestPrompt = hasSavedInterests === false;
   const fixedCardWidth = Math.min(width - 56, 360);
   const chromeWidth = Math.min(width - 40, fixedCardWidth + 16);
-  const fixedCardHeight = Math.min(620, Math.max(520, height * 0.64));
+  const fixedCardHeight = showInterestPrompt
+    ? Math.min(560, Math.max(500, height * 0.59))
+    : Math.min(620, Math.max(520, height * 0.64));
   const isCaughtUp = feed.length > 0 && currentIndex >= feed.length;
   const warmImageUrls = useMemo(() => {
     const start = Math.max(0, currentIndex - IMAGE_PREFETCH_BEHIND);
@@ -116,6 +122,10 @@ export default function BriefingScreen() {
   }, []);
 
   useEffect(() => {
+    if (sessionReady && !accessToken) router.replace('/login');
+  }, [accessToken, router, sessionReady]);
+
+  useEffect(() => {
     selectedFeedDateRef.current = selectedFeedDate;
     selectedEditionTypeRef.current = selectedEditionType;
   }, [selectedEditionType, selectedFeedDate]);
@@ -132,12 +142,14 @@ export default function BriefingScreen() {
       if (!accessToken) {
         feedRequestIdRef.current += 1;
         feedLoadingRef.current = false;
+        interestSignatureRef.current = null;
         hasLoadedFeedRef.current = false;
         setFeed([]);
         setCurrentIndex(0);
         setEditions([]);
         setSelectedFeedDate(null);
         setSelectedEditionType(null);
+        setHasSavedInterests(null);
         setLoading(false);
         return;
       }
@@ -217,11 +229,42 @@ export default function BriefingScreen() {
     [accessToken, apiBaseUrl, clearSession, marketTimezone, resetSwipe, router]
   );
 
+  const loadInterestStatus = useCallback(async () => {
+    if (!accessToken) {
+      setHasSavedInterests(null);
+      return;
+    }
+    try {
+      const savedInterests = await fetchMyInterests(apiBaseUrl, accessToken);
+      const nextSignature = savedInterests
+        .map((interest) => interest.id)
+        .sort((left, right) => left - right)
+        .join(',');
+      const previousSignature = interestSignatureRef.current;
+      interestSignatureRef.current = nextSignature;
+      setHasSavedInterests(savedInterests.length > 0);
+      if (
+        previousSignature !== null &&
+        previousSignature !== nextSignature &&
+        hasLoadedFeedRef.current
+      ) {
+        void loadFeed(true);
+      }
+    } catch {
+      setHasSavedInterests(null);
+    }
+  }, [accessToken, apiBaseUrl, loadFeed]);
+
   useFocusEffect(
     useCallback(() => {
-      if (!accessToken || hasLoadedFeedRef.current) return;
-      void loadFeed(false);
-    }, [accessToken, loadFeed])
+      if (!accessToken) {
+        interestSignatureRef.current = null;
+        setHasSavedInterests(null);
+        return;
+      }
+      void loadInterestStatus();
+      if (!hasLoadedFeedRef.current) void loadFeed(false);
+    }, [accessToken, loadFeed, loadInterestStatus])
   );
 
   useEffect(() => {
@@ -435,23 +478,11 @@ export default function BriefingScreen() {
     }
   }
 
-  if (!sessionReady) {
+  if (!sessionReady || !accessToken) {
     return (
       <SafeAreaView style={styles.centerState}>
         <ActivityIndicator size="large" color={colors.accent} />
       </SafeAreaView>
-    );
-  }
-
-  if (!accessToken) {
-    return (
-      <EmptyState
-        icon="newspaper-outline"
-        title="Set up your reader"
-        body="Sign in with your beta invitation to start your personalized briefing."
-        actionLabel="Continue"
-        onAction={() => router.replace('/login')}
-      />
     );
   }
 
@@ -509,6 +540,13 @@ export default function BriefingScreen() {
             onSelect={(edition) => void selectEdition(edition)}
           />
         </View>
+        {showInterestPrompt ? (
+          <InterestPrompt
+            width={chromeWidth}
+            reduceMotion={reduceMotion}
+            onPress={() => router.push('/edit-preferences')}
+          />
+        ) : null}
         <View style={[styles.emptyWrap, { width: chromeWidth }]}>
           <EmptyState
             icon={refreshFailure ? 'cloud-offline-outline' : 'time-outline'}
@@ -573,6 +611,14 @@ export default function BriefingScreen() {
         />
       </View>
 
+      {showInterestPrompt ? (
+        <InterestPrompt
+          width={chromeWidth}
+          reduceMotion={reduceMotion}
+          onPress={() => router.push('/edit-preferences')}
+        />
+      ) : null}
+
       {refreshFailure ? (
         <View style={styles.banner} accessibilityLiveRegion="polite">
           <Metadata style={styles.bannerText}>{refreshFailure}</Metadata>
@@ -612,6 +658,81 @@ export default function BriefingScreen() {
         </View>
       </View>
     </SafeAreaView>
+  );
+}
+
+function InterestPrompt({
+  width,
+  reduceMotion,
+  onPress,
+}: {
+  width: number;
+  reduceMotion: boolean;
+  onPress: () => void;
+}) {
+  const pulse = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (reduceMotion) {
+      pulse.setValue(0);
+      return;
+    }
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, {
+          toValue: 1,
+          duration: 1100,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulse, {
+          toValue: 0,
+          duration: 1100,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => {
+      animation.stop();
+      pulse.setValue(0);
+    };
+  }, [pulse, reduceMotion]);
+
+  const scale = pulse.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.018],
+  });
+
+  return (
+    <Animated.View
+      pointerEvents="box-none"
+      style={[
+        styles.interestPromptShell,
+        { width },
+        reduceMotion ? null : { transform: [{ scale }] },
+      ]}
+    >
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Choose interests"
+        onPress={onPress}
+        style={({ pressed }) => [
+          styles.interestPrompt,
+          pressed && styles.pressed,
+        ]}
+      >
+        <Ionicons name="sparkles-outline" size={18} color={colors.accent} />
+        <View style={styles.interestPromptCopy}>
+          <Metadata numberOfLines={1} style={styles.interestPromptTitle}>
+            Make it yours
+          </Metadata>
+          <Metadata numberOfLines={1} style={styles.interestPromptBody}>
+            Choose interests for sharper picks.
+          </Metadata>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.inkSecondary} />
+      </Pressable>
+    </Animated.View>
   );
 }
 
@@ -659,6 +780,43 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.md,
     zIndex: 2,
   },
+  interestPromptShell: {
+    alignSelf: 'center',
+    marginBottom: spacing.sm,
+    borderRadius: radius.control,
+    shadowColor: colors.accent,
+    shadowOpacity: 0.22,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 5,
+  },
+  interestPrompt: {
+    width: '100%',
+    minHeight: 48,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: 'rgba(49, 91, 44, 0.42)',
+    borderRadius: radius.control,
+    backgroundColor: '#FDFFF9',
+    paddingHorizontal: spacing.sm,
+  },
+  interestPromptCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  interestPromptTitle: {
+    color: colors.inkPrimary,
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
+  },
+  interestPromptBody: {
+    color: colors.inkSecondary,
+    fontSize: 12,
+    lineHeight: 16,
+  },
   banner: {
     marginHorizontal: layout.margin,
     marginBottom: spacing.sm,
@@ -689,4 +847,5 @@ const styles = StyleSheet.create({
     opacity: 0.46,
   },
   emptyWrap: { flex: 1, alignSelf: 'center', gap: spacing.md },
+  pressed: { opacity: 0.72 },
 });

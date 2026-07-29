@@ -7,7 +7,6 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'reac
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
-  Masthead,
   Metadata,
   ScreenTitle,
   SectionLabel,
@@ -126,7 +125,7 @@ export default function EditPreferencesScreen() {
     );
   }
 
-  if (!sessionReady || loading) {
+  if (!sessionReady || loading || !accessToken) {
     return (
       <SafeAreaView style={styles.centerState}>
         <ActivityIndicator color={colors.accent} />
@@ -138,14 +137,15 @@ export default function EditPreferencesScreen() {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.topRow}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Back to profile" style={styles.backButton} onPress={() => router.back()}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Back to profile"
+            style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
+            onPress={() => router.back()}
+          >
             <Ionicons name="chevron-back" size={23} color={colors.inkPrimary} />
           </Pressable>
-          <View style={styles.headerCopy}>
-            <Masthead>THE EDIT</Masthead>
-            <View style={styles.rule} />
-            <ScreenTitle>Edit Preferences</ScreenTitle>
-          </View>
+          <ScreenTitle style={styles.screenTitle}>Select your interests</ScreenTitle>
         </View>
 
         {error ? (
@@ -156,14 +156,28 @@ export default function EditPreferencesScreen() {
         {saving ? <Metadata style={styles.saving}>Saving preferences...</Metadata> : null}
 
         <View style={styles.section}>
-          <SectionLabel>Topics</SectionLabel>
-          {TOPICS.map(renderPreference)}
+          <SectionLabel style={styles.sectionHeading}>Regions</SectionLabel>
+          {REGIONS.map(renderPreference)}
         </View>
 
         <View style={styles.section}>
-          <SectionLabel>Regions</SectionLabel>
-          {REGIONS.map(renderPreference)}
+          <SectionLabel style={styles.sectionHeading}>Topics</SectionLabel>
+          {TOPICS.map(renderPreference)}
         </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Done selecting interests"
+          disabled={saving}
+          style={({ pressed }) => [
+            styles.doneButton,
+            saving && styles.disabled,
+            pressed && styles.pressed,
+          ]}
+          onPress={() => router.back()}
+        >
+          <Metadata style={styles.doneText}>Done</Metadata>
+        </Pressable>
       </ScrollView>
     </SafeAreaView>
   );
@@ -173,7 +187,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.canvas },
   centerState: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.canvas },
   content: { padding: layout.margin, gap: spacing.lg, paddingBottom: spacing.xxxl },
-  topRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  topRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   backButton: {
     width: layout.minTouch,
     height: layout.minTouch,
@@ -181,12 +195,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginLeft: -spacing.sm,
   },
-  headerCopy: { flex: 1, gap: spacing.xs },
-  rule: {
-    height: 1,
-    backgroundColor: colors.deepBlack,
-    opacity: 0.65,
-    marginBottom: spacing.md,
+  doneButton: {
+    alignSelf: 'center',
+    minWidth: 132,
+    minHeight: layout.minTouch,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: radius.control,
+    backgroundColor: colors.accent,
+    paddingHorizontal: spacing.lg,
+  },
+  doneText: {
+    color: colors.surfacePrimary,
+    fontSize: 15,
+    lineHeight: 19,
+    fontWeight: '700',
+  },
+  screenTitle: {
+    flex: 1,
+    color: colors.accent,
+    fontSize: 20,
+    lineHeight: 24,
   },
   banner: {
     borderWidth: 1,
@@ -203,6 +232,10 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingTop: spacing.md,
   },
+  sectionHeading: {
+    color: colors.accent,
+    fontWeight: '800',
+  },
   preferenceRow: {
     minHeight: layout.minTouch,
     flexDirection: 'row',
@@ -213,4 +246,5 @@ const styles = StyleSheet.create({
   },
   preferenceLabel: { color: colors.inkPrimary, fontSize: 16 },
   disabled: { opacity: 0.45 },
+  pressed: { opacity: 0.72 },
 });
