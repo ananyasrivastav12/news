@@ -5,14 +5,14 @@
 **The Edit** is a full-stack personalized news platform built with **FastAPI,
 PostgreSQL, Celery, Redis, React Native, and embedding-based vector similarity**.
 It turns live news into swipeable flashcard briefings, learns from reader
-signals, and gives an admin a real control room for the ingestion and
-summarization pipeline.
+signals, and includes an admin dashboard for monitoring article intake,
+summaries, coverage, beta users, and support.
 
-The project focuses on the hard parts behind a news product: fresh content
-intake, fast mobile reading, useful personalization, and enough internal
-tooling to understand whether the system is healthy.
+The project focuses on fresh content intake, fast mobile reading, useful
+personalization, and enough internal tooling to understand whether the system is
+healthy.
 
-- Daily editions are ranked from user interests, behavior, recency, keywords, and embedding similarity.
+- Feeds are ranked from user interests, behavior, recency, keywords, and embedding similarity.
 - Background workers ingest, deduplicate, summarize, embed, and prune articles without blocking the reader app.
 - Swipes, likes, saves, skips, and dwell time feed back into the preference profile.
 - The admin dashboard exposes pipeline runs, content coverage, beta users, and support messages.
@@ -22,24 +22,22 @@ tooling to understand whether the system is healthy.
 ### Mobile Reader
 
 The mobile app is designed to feel like a fast editorial product, not a generic
-feed. Readers swipe through Morning, Midday, and Evening editions; images are
-prefetched ahead of the current card; and every interaction updates the user's
-preference profile.
+feed. Readers swipe through scheduled briefing cards; images are prefetched
+ahead of the current card; and every interaction updates the user's preference
+profile.
 
 <p>
   <img src="./docs/assets/mobile-briefing.png" alt="Swipeable briefing card" width="210">
-  <img src="./docs/assets/mobile-feed-technology.png" alt="Technology briefing card" width="210">
   <img src="./docs/assets/mobile-feed-entertainment.png" alt="Entertainment briefing card" width="210">
-  <img src="./docs/assets/mobile-profile.png" alt="Reader profile screen" width="210">
   <img src="./docs/assets/mobile-saved.png" alt="Saved stories screen" width="210">
 </p>
 
 ### Admin Dashboard
 
-The private dashboard turns the app into an operable system. It tracks article
-supply, summary coverage, image coverage, market/category gaps, recent pipeline
-runs, beta users, and support messages. This gives an admin a quick way to see
-whether fresh content is flowing, where coverage is thin, and what needs follow-up.
+The private dashboard tracks article supply, summary coverage, image coverage,
+market/category gaps, recent pipeline runs, beta users, and support messages.
+This gives an admin a quick way to see whether fresh content is flowing, where
+coverage is thin, and what needs follow-up.
 
 ![Admin dashboard home](./docs/assets/dashboard-home.png)
 
@@ -54,7 +52,7 @@ whether fresh content is flowing, where coverage is thin, and what needs follow-
 The Edit has two connected parts: a mobile reader for personalized daily
 briefings, and an admin dashboard for running and checking the content system.
 
-- **Reader experience:** Users get Morning, Midday, and Evening editions with swipeable cards, images, sources, dates, summaries, likes, dislikes, and saves.
+- **Reader experience:** Users get scheduled briefing cards with images, sources, dates, summaries, likes, dislikes, and saves.
 - **Personalization:** Selected regions/topics and reading behavior influence which articles appear first.
 - **Content pipeline:** Celery workers ingest NewsAPI articles, validate them, remove duplicates, correct categories, extract keywords, summarize, embed, and prune the pool.
 - **Ranking:** The recommender combines explicit interests, recency, keyword matches, behavior signals, embedding similarity, and diversity rules.
@@ -65,34 +63,38 @@ briefings, and an admin dashboard for running and checking the content system.
 
 ```mermaid
 flowchart LR
-  A["NewsAPI"] --> B["Ingestion worker"]
+  A["NewsAPI"] --> B["Celery ingestion"]
   B --> C["Postgres article pool"]
   C --> D["LLM summaries"]
   C --> E["Article embeddings"]
-  D --> F["Hybrid ranking"]
-  E --> F
-  G["User interests"] --> F
-  H["Clicks, likes, saves, skips, dwell time"] --> F
-  F --> I["Stable daily editions"]
+  D --> C
+  E --> C
+  C --> F["Feed API"]
+  G["User interests and behavior"] --> F
+  F --> H["Hybrid ranker and reranker"]
+  H --> I["Per-user flashcards"]
   I --> J["React Native reader"]
-  K["Admin dashboard"] --> B
-  K --> D
-  K --> C
+  J --> G
+  C --> K["Admin dashboard"]
+  K --> L["Pipeline controls"]
+  L --> B
+  L --> D
+  L --> H
 ```
 
 1. Celery jobs fetch fresh articles by country and category.
 2. Articles are cleaned, deduplicated by URL/story key, categorized, and stored.
-3. Pending articles are summarized and embedded.
-4. The recommender scores candidates using interest matches, country/category preferences, recency, keywords, previous behavior, and embedding similarity.
-5. A reranker improves feed diversity by balancing markets, categories, sources, and duplicate-like stories.
-6. Reader interactions are logged back into the preference system.
+3. Pending article rows are summarized and embedded, then stored back in PostgreSQL.
+4. The feed API ranks articles for each user when the app loads or an admin/scheduled feed job runs.
+5. The recommender combines interests, recency, keywords, behavior signals, embedding similarity, and diversity rules.
+6. Selected articles are persisted as per-user flashcards, and reader interactions update future ranking.
 
 ## Core Features
 
 ### Reader App
 
 - Beta email/password login with persisted sessions.
-- Three daily editions: Morning Brief, Midday Catch-Up, and Daily Digest.
+- Scheduled edition tabs for different parts of the day.
 - Swipeable flashcard UI with headline, image, metadata, summary, like, dislike, and save actions.
 - Instant-feeling image loading with `expo-image` prefetching and memory/disk cache.
 - Interest setup by region and topic.
@@ -121,11 +123,11 @@ flowchart LR
 
 - **Mobile:** Expo, React Native, TypeScript, Expo Router, `expo-image`.
 - **Dashboard:** React, TypeScript, Vite.
-- **Backend:** FastAPI, SQLAlchemy, Alembic, Pydantic.
-- **Jobs:** Celery, Redis.
+- **Backend API:** FastAPI, SQLAlchemy, Alembic, Pydantic.
+- **Workers/queue:** Celery workers with Redis as the broker.
 - **Database:** PostgreSQL.
-- **AI/content:** NewsAPI, OpenAI summaries, OpenAI embeddings, deterministic fallback summaries.
-- **Testing:** Pytest backend contracts, ranking tests, feed edition tests, summarizer tests, frontend TypeScript/lint checks.
+- **AI/content:** NewsAPI, OpenAI summaries, OpenAI embeddings.
+- **Testing:** Pytest, mypy, flake8, TypeScript checks, Vite build.
 
 ## Repository Layout
 
