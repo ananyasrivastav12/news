@@ -8,10 +8,14 @@ It turns live news into swipeable flashcard briefings, learns from reader
 signals, and gives an admin a real control room for the ingestion and
 summarization pipeline.
 
-- Built a personalized news recommendation platform that generates daily article rankings and flashcard-style summaries using user interests, behavioral signals, content features, and embedding-based retrieval.
-- Designed an asynchronous content pipeline for article ingestion, deduplication, keyword extraction, embedding generation, and LLM-based summarization using Celery and Redis.
-- Implemented a hybrid ranking and reranking pipeline combining explicit interests, behavioral signals, recency decay, keyword features, and embedding similarity to score candidates, suppress duplicates, and improve feed diversity.
-- Built user-feedback pipelines that capture clicks, likes, saves, skips, and dwell time to continuously update preference profiles and improve ranking quality.
+The project focuses on the hard parts behind a news product: fresh content
+intake, fast mobile reading, useful personalization, and enough internal
+tooling to understand whether the system is healthy.
+
+- Daily editions are ranked from user interests, behavior, recency, keywords, and embedding similarity.
+- Background workers ingest, deduplicate, summarize, embed, and prune articles without blocking the reader app.
+- Swipes, likes, saves, skips, and dwell time feed back into the preference profile.
+- The admin dashboard exposes pipeline runs, content coverage, beta users, and support messages.
 
 ## Product Demo
 
@@ -24,7 +28,8 @@ preference profile.
 
 <p>
   <img src="./docs/assets/mobile-briefing.png" alt="Swipeable briefing card" width="210">
-  <img src="./docs/assets/mobile-interests.png" alt="Interest selection screen" width="210">
+  <img src="./docs/assets/mobile-feed-technology.png" alt="Technology briefing card" width="210">
+  <img src="./docs/assets/mobile-feed-entertainment.png" alt="Entertainment briefing card" width="210">
   <img src="./docs/assets/mobile-profile.png" alt="Reader profile screen" width="210">
   <img src="./docs/assets/mobile-saved.png" alt="Saved stories screen" width="210">
 </p>
@@ -33,7 +38,8 @@ preference profile.
 
 The private dashboard turns the app into an operable system. It tracks article
 supply, summary coverage, image coverage, market/category gaps, recent pipeline
-runs, beta users, and support messages.
+runs, beta users, and support messages. This gives an admin a quick way to see
+whether fresh content is flowing, where coverage is thin, and what needs follow-up.
 
 ![Admin dashboard home](./docs/assets/dashboard-home.png)
 
@@ -43,17 +49,17 @@ runs, beta users, and support messages.
 
 ![Article pool filters and review table](./docs/assets/dashboard-articles.png)
 
-## Why It Matters
+## Product And Engineering
 
-Most portfolio apps stop at CRUD. This project has the parts that make a real
-content product difficult:
+The Edit has two connected parts: a mobile reader for personalized daily
+briefings, and an admin dashboard for running and checking the content system.
 
-- **Fresh content pipeline:** NewsAPI ingestion, validation, deduplication, category correction, keyword extraction, pruning, and quota-aware pool management.
-- **LLM summarization:** OpenAI-powered concise summaries shaped for fixed mobile cards, with fallback summaries for local development.
-- **Vector-aware ranking:** Article and user embeddings feed semantic similarity into the ranking score.
-- **Hybrid recommender:** Explicit interests, market preferences, keyword signals, dwell time, saves, likes, skips, recency, and diversity constraints are combined into one feed.
-- **Fast mobile UX:** Card images are prefetched 12 stories ahead and 4 behind with `expo-image` memory/disk caching, so swiping stays responsive.
-- **Operator tooling:** Admins can run pipelines, inspect quality, create beta users, reset passwords, delete accounts, review support messages, and understand why content is or is not ready.
+- **Reader experience:** Users get Morning, Midday, and Evening editions with swipeable cards, images, sources, dates, summaries, likes, dislikes, and saves.
+- **Personalization:** Selected regions/topics and reading behavior influence which articles appear first.
+- **Content pipeline:** Celery workers ingest NewsAPI articles, validate them, remove duplicates, correct categories, extract keywords, summarize, embed, and prune the pool.
+- **Ranking:** The recommender combines explicit interests, recency, keyword matches, behavior signals, embedding similarity, and diversity rules.
+- **Mobile performance:** Feed images are prefetched 12 stories ahead and 4 behind with `expo-image` memory/disk caching.
+- **Admin workflow:** The dashboard shows pipeline runs, article coverage, image gaps, beta users, support messages, and account controls.
 
 ## How It Works
 
@@ -231,6 +237,4 @@ Note: Vite expects Node 20.19+ for dashboard builds.
 
 ## Notes
 
-- The app is designed for a controlled beta, not public production traffic on a free NewsAPI plan.
-- Ranking is intentionally inspectable: the system uses clear heuristic signals plus embeddings before moving to heavier ML.
-- See [docs/EXTRA_INFORMATION.md](./docs/EXTRA_INFORMATION.md) for operating notes, quota controls, ranking details, and future improvements.
+- This project is still under development. It currently uses NewsAPI for article discovery; the next version is intended to use a larger daily corpus from source APIs and permitted web crawling/scraping.
