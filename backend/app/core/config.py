@@ -14,12 +14,13 @@ class Settings(BaseSettings):
     NEWS_API_COUNTRY: str = Field(default="us")
     NEWS_API_COUNTRIES: str = Field(default="us,in")
     NEWS_API_PAGE_SIZE: int = Field(default=100)
-    NEWS_DAILY_ARTICLE_TARGET: int = Field(default=250)
-    ARTICLE_POOL_LIMIT: int = Field(default=1000)
+    NEWS_DAILY_ARTICLE_TARGET: int = Field(default=400)
+    ARTICLE_POOL_LIMIT: int = Field(default=1200)
     NEWS_BATCH_CATEGORIES: str = Field(
         default="business,technology,health,sports,entertainment,science,general"
     )
     ARTICLE_MAX_AGE_HOURS: int = Field(default=168)
+    FEED_PRIMARY_MAX_AGE_HOURS: int = Field(default=36)
     MIN_ARTICLE_TEXT_LENGTH: int = Field(default=60)
     FEED_SIZE: int = Field(default=50)
     FEED_EDITION_SIZE: int = Field(default=100)
@@ -36,7 +37,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str | None = Field(default=None)
     OPENAI_MODEL: str = Field(default="gpt-4.1-mini")
     OPENAI_EMBEDDING_MODEL: str = Field(default="text-embedding-3-small")
-    OPENAI_DAILY_SUMMARY_LIMIT: int = Field(default=250)
+    OPENAI_DAILY_SUMMARY_LIMIT: int = Field(default=400)
 
     GOOGLE_CLIENT_IDS: str = Field(default="")
     ADMIN_EMAILS: str = Field(default="")

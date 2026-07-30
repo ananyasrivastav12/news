@@ -1,77 +1,125 @@
-# The Edit
+# Personalized News Recommendation Platform
 
-The Edit is a personalized mobile news briefing app with an operator dashboard.
-It ingests fresh news, summarizes articles into compact cards, ranks editions for
-each reader, and gives an admin a practical control room for running and
-inspecting the content pipeline.
+**FastAPI, PostgreSQL, Celery, Redis, React Native, Vector Search**
 
-The project is built as a recruiter-friendly full-stack product: a React Native
-reader app, a FastAPI data pipeline, background workers, and a private React
-dashboard.
+**The Edit** is a full-stack personalized news platform built with **FastAPI,
+PostgreSQL, Celery, Redis, React Native, and embedding-based vector similarity**.
+It turns live news into swipeable flashcard briefings, learns from reader
+signals, and gives an admin a real control room for the ingestion and
+summarization pipeline.
 
-## User App
+- Built a personalized news recommendation platform that generates daily article rankings and flashcard-style summaries using user interests, behavioral signals, content features, and embedding-based retrieval.
+- Designed an asynchronous content pipeline for article ingestion, deduplication, keyword extraction, embedding generation, and LLM-based summarization using Celery and Redis.
+- Implemented a hybrid ranking and reranking pipeline combining explicit interests, behavioral signals, recency decay, keyword features, and embedding similarity to score candidates, suppress duplicates, and improve feed diversity.
+- Built user-feedback pipelines that capture clicks, likes, saves, skips, and dwell time to continuously update preference profiles and improve ranking quality.
 
-The mobile app is the reader-facing experience. Testers sign in with a beta
-email/password, choose interests, and read swipeable news cards organized into
-daily editions.
+## Product Demo
 
-What the app supports:
+### Mobile Reader
 
-- Email/password beta login with persisted session state.
-- Interest selection by topics and regions.
-- Personalized editions: Morning Brief, Midday Catch-Up, and Daily Digest.
-- Swipeable story cards with headline, summary, image, source, and open action.
-- Interaction signals: viewed, liked, disliked, saved, clicked, and dwell time.
-- Saved stories screen for revisiting articles later.
+The mobile app is designed to feel like a fast editorial product, not a generic
+feed. Readers swipe through Morning, Midday, and Evening editions; images are
+prefetched ahead of the current card; and every interaction updates the user's
+preference profile.
 
-## Admin Dashboard
+<p>
+  <img src="./docs/assets/mobile-briefing.png" alt="Swipeable briefing card" width="210">
+  <img src="./docs/assets/mobile-interests.png" alt="Interest selection screen" width="210">
+  <img src="./docs/assets/mobile-profile.png" alt="Reader profile screen" width="210">
+  <img src="./docs/assets/mobile-saved.png" alt="Saved stories screen" width="210">
+</p>
 
-The dashboard is the operator-facing experience. It is intentionally private and
-requires an admin email listed in `ADMIN_EMAILS`.
+### Admin Dashboard
 
-What the dashboard supports:
+The private dashboard turns the app into an operable system. It tracks article
+supply, summary coverage, image coverage, market/category gaps, recent pipeline
+runs, beta users, and support messages.
 
-- Pipeline controls for ingestion, summarization, and full content refreshes.
-- Health overview for article supply, summaries, embeddings, users, and coverage.
-- Article pool filters by market, category, source, date, image status, and user signals.
-- User management for creating beta accounts.
-- Per-user feed inspection with ranking reasons, card state, and embedding status.
-- Recent pipeline run history with fetched, inserted, summarized, embedded, and failure counts.
+![Admin dashboard home](./docs/assets/dashboard-home.png)
+
+![Article quality and coverage dashboard](./docs/assets/dashboard-quality.png)
+
+![Pipeline run details](./docs/assets/dashboard-pipeline-run.png)
+
+![Article pool filters and review table](./docs/assets/dashboard-articles.png)
+
+## Why It Matters
+
+Most portfolio apps stop at CRUD. This project has the parts that make a real
+content product difficult:
+
+- **Fresh content pipeline:** NewsAPI ingestion, validation, deduplication, category correction, keyword extraction, pruning, and quota-aware pool management.
+- **LLM summarization:** OpenAI-powered concise summaries shaped for fixed mobile cards, with fallback summaries for local development.
+- **Vector-aware ranking:** Article and user embeddings feed semantic similarity into the ranking score.
+- **Hybrid recommender:** Explicit interests, market preferences, keyword signals, dwell time, saves, likes, skips, recency, and diversity constraints are combined into one feed.
+- **Fast mobile UX:** Card images are prefetched 12 stories ahead and 4 behind with `expo-image` memory/disk caching, so swiping stays responsive.
+- **Operator tooling:** Admins can run pipelines, inspect quality, create beta users, reset passwords, delete accounts, review support messages, and understand why content is or is not ready.
 
 ## How It Works
 
 ```mermaid
 flowchart LR
-  A["NewsAPI"] --> B["FastAPI ingestion"]
+  A["NewsAPI"] --> B["Ingestion worker"]
   B --> C["Postgres article pool"]
-  C --> D["Summarizer + embeddings"]
-  D --> E["Feed ranking"]
-  E --> F["Expo mobile app"]
-  F --> G["Reader signals"]
-  G --> E
-  H["Admin dashboard"] --> B
-  H --> D
-  H --> E
-  I["Redis + Celery"] --> B
-  I --> D
+  C --> D["LLM summaries"]
+  C --> E["Article embeddings"]
+  D --> F["Hybrid ranking"]
+  E --> F
+  G["User interests"] --> F
+  H["Clicks, likes, saves, skips, dwell time"] --> F
+  F --> I["Stable daily editions"]
+  I --> J["React Native reader"]
+  K["Admin dashboard"] --> B
+  K --> D
+  K --> C
 ```
 
-1. The backend fetches recent articles by country and category.
-2. Articles are cleaned, deduplicated, categorized, and stored in Postgres.
-3. Pending articles are summarized with OpenAI when configured, with a local fallback for development.
-4. Embeddings are stored when available for semantic ranking.
-5. Feeds are ranked per user and persisted as stable daily editions.
-6. Reader interactions are logged and used to improve future ranking.
+1. Celery jobs fetch fresh articles by country and category.
+2. Articles are cleaned, deduplicated by URL/story key, categorized, and stored.
+3. Pending articles are summarized and embedded.
+4. The recommender scores candidates using interest matches, country/category preferences, recency, keywords, previous behavior, and embedding similarity.
+5. A reranker improves feed diversity by balancing markets, categories, sources, and duplicate-like stories.
+6. Reader interactions are logged back into the preference system.
+
+## Core Features
+
+### Reader App
+
+- Beta email/password login with persisted sessions.
+- Three daily editions: Morning Brief, Midday Catch-Up, and Daily Digest.
+- Swipeable flashcard UI with headline, image, metadata, summary, like, dislike, and save actions.
+- Instant-feeling image loading with `expo-image` prefetching and memory/disk cache.
+- Interest setup by region and topic.
+- Saved stories screen with category filters.
+- Profile page with reading stats, selected interests, account actions, and admin contact.
+
+### Backend And Pipeline
+
+- FastAPI API with SQLAlchemy models and Alembic migrations.
+- PostgreSQL article pool with summaries, embeddings, flashcards, interactions, users, and support messages.
+- Celery + Redis background workers for ingestion, summarization, embeddings, and scheduled editions.
+- Configurable pipeline limits. Current defaults use a 1,200 article pool and a 400 article target per run.
+- Duplicate suppression by URL and story-key similarity.
+- Freshness controls so stale articles only backfill when fresh supply is thin.
+
+### Admin Dashboard
+
+- Pipeline controls for full refreshes, ingestion-only runs, and summarization-only runs.
+- Health overview for retained articles, summaries, embeddings, users, saved articles, and attention items.
+- Quality dashboard for market/category coverage, missing images, pending summaries, and thin buckets.
+- Article browser with filters for market, category, source, date, summary status, image status, signals, and protected articles.
+- User management for beta accounts, password resets, and account deletion.
+- Support inbox for authenticated reader messages.
 
 ## Tech Stack
 
-- **Mobile:** Expo, React Native, TypeScript, Expo Router.
+- **Mobile:** Expo, React Native, TypeScript, Expo Router, `expo-image`.
 - **Dashboard:** React, TypeScript, Vite.
 - **Backend:** FastAPI, SQLAlchemy, Alembic, Pydantic.
 - **Jobs:** Celery, Redis.
-- **Data:** Postgres.
-- **AI/content:** NewsAPI, OpenAI summaries and embeddings, deterministic fallback summaries.
-- **Tests:** Pytest for backend contracts, ranking, feed editions, and summarizer behavior.
+- **Database:** PostgreSQL.
+- **AI/content:** NewsAPI, OpenAI summaries, OpenAI embeddings, deterministic fallback summaries.
+- **Testing:** Pytest backend contracts, ranking tests, feed edition tests, summarizer tests, frontend TypeScript/lint checks.
 
 ## Repository Layout
 
@@ -79,22 +127,8 @@ flowchart LR
 backend/    FastAPI API, database models, Celery tasks, ranking, summarization
 frontend/   Expo mobile reader app
 dashboard/  React admin dashboard
-docs/       Extra technical and operating notes
+docs/       Extra technical notes and README assets
 ```
-
-## Visual Overview
-
-The diagram above shows the full product loop: operator-run ingestion and
-summarization, persisted ranked editions, a mobile reader, and feedback signals
-that feed future ranking. Product screenshots should be added under
-`docs/assets/` when final app branding is ready.
-
-Recommended screenshot set:
-
-- Mobile briefing
-- Saved stories
-- Admin overview
-- User feed inspector
 
 ## Local Setup
 
@@ -167,7 +201,7 @@ npm --prefix frontend run start
 ```
 
 For a physical-phone beta, build with `EXPO_PUBLIC_API_BASE_URL` pointing to a
-deployed HTTPS backend or stable tunnel.
+deployed HTTPS backend or a stable tunnel.
 
 ## Testing
 
@@ -193,27 +227,10 @@ cd dashboard
 npm run build
 ```
 
-Note: Vite may warn if local Node is below its preferred version. The project
-should be run with Node 20.19+ for dashboard builds.
+Note: Vite expects Node 20.19+ for dashboard builds.
 
-## Why This Project Is Useful
+## Notes
 
-The Edit demonstrates a realistic product loop rather than a static demo:
-
-- It has a user-facing app and an operator-facing dashboard.
-- It handles background jobs, third-party APIs, persistence, auth, and admin tooling.
-- It turns messy external news data into a constrained mobile experience.
-- It records feedback signals that can support future ranking and ML experiments.
-- It is designed for a controlled beta, with quota limits and private admin access.
-
-## Current Limitations
-
-- NewsAPI plan limits make this suitable for controlled beta use, not public production traffic.
-- Ranking is heuristic until there is enough interaction data for stronger personalization.
-- Product screenshots and final app branding should be added before a polished GitHub share.
-- Google login is intentionally disabled unless OAuth client IDs are configured.
-
-## Extra Notes
-
-See [docs/EXTRA_INFORMATION.md](docs/EXTRA_INFORMATION.md) for operating model,
-ranking details, quota controls, deployment notes, and future improvements.
+- The app is designed for a controlled beta, not public production traffic on a free NewsAPI plan.
+- Ranking is intentionally inspectable: the system uses clear heuristic signals plus embeddings before moving to heavier ML.
+- See [docs/EXTRA_INFORMATION.md](./docs/EXTRA_INFORMATION.md) for operating notes, quota controls, ranking details, and future improvements.

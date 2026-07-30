@@ -581,6 +581,38 @@ def create_admin_user(
     }
 
 
+@router.post("/users/{user_id}/password", status_code=status.HTTP_204_NO_CONTENT)
+def reset_admin_user_password(
+    user_id: int,
+    payload: admin_schema.AdminUserPasswordUpdate,
+    db: Session = Depends(get_db),
+):
+    user = db.get(db_model.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    crud_user.update_password(db, user, payload.password)
+
+
+@router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_admin_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    admin_user: db_model.User = Depends(get_current_admin_user),
+):
+    user = db.get(db_model.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.id == admin_user.id or user.email.lower() in settings.admin_emails:
+        raise HTTPException(status_code=400, detail="Admin accounts cannot be deleted.")
+    (
+        db.query(db_model.SummaryReview)
+        .filter(db_model.SummaryReview.reviewer_user_id == user.id)
+        .update({"reviewer_user_id": None}, synchronize_session=False)
+    )
+    db.delete(user)
+    db.commit()
+
+
 @router.get("/users/{user_id}/feed", response_model=list[admin_schema.UserFeedItemOut])
 def read_admin_user_feed(user_id: int, db: Session = Depends(get_db)):
     user = db.get(db_model.User, user_id)
@@ -701,6 +733,39 @@ def read_summary_reviews(
         .limit(limit)
         .all()
     )
+
+
+@router.get("/support-messages", response_model=list[admin_schema.SupportMessageOut])
+def read_support_messages(
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    query = db.query(db_model.SupportMessage).options(
+        joinedload(db_model.SupportMessage.user)
+    )
+    if status_filter:
+        query = query.filter(db_model.SupportMessage.status == status_filter)
+    messages = (
+        query.order_by(
+            desc(db_model.SupportMessage.created_at),
+            desc(db_model.SupportMessage.id),
+        )
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id": message.id,
+            "user_id": message.user_id,
+            "user_email": message.user.email if message.user else "Unknown user",
+            "subject": message.subject,
+            "message": message.message,
+            "status": message.status,
+            "created_at": message.created_at,
+        }
+        for message in messages
+    ]
 
 
 @router.post(

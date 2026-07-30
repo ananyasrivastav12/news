@@ -213,7 +213,7 @@ const styles = StyleSheet.create({
   },
   screenTitle: {
     flex: 1,
-    color: colors.accent,
+    color: colors.inkPrimary,
     fontSize: 20,
     lineHeight: 24,
   },

@@ -9,7 +9,7 @@ os.environ.setdefault("NEWS_API_KEY", "test-news-key")
 os.environ.setdefault("ADMIN_EMAILS", "reader@example.com")
 
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -33,7 +33,11 @@ from app.services.recommendations import (
     rank_articles_for_user,
     rerank_with_constraints,
 )
-from app.tasks.news_fetching import _async_summarize_articles, _build_user_feed
+from app.tasks.news_fetching import (
+    _async_ingest_news,
+    _async_summarize_articles,
+    _build_user_feed,
+)
 
 engine = create_engine(
     "sqlite://",
@@ -218,6 +222,147 @@ def test_country_category_intersection_ranks_first():
         db.close()
 
 
+def test_ranker_keeps_stale_articles_behind_fresh_feed_items(monkeypatch):
+    monkeypatch.setattr(
+        "app.services.recommendations.settings.FEED_PRIMARY_MAX_AGE_HOURS", 36
+    )
+    monkeypatch.setattr("app.services.recommendations.settings.FEED_EDITION_SIZE", 3)
+    monkeypatch.setattr("app.services.recommendations.settings.MAX_FEED_ITEMS", 3)
+
+    db = TestingSessionLocal()
+    try:
+        user = db.query(User).filter_by(email="reader@example.com").one()
+        interests = {
+            interest.name: interest
+            for interest in db.query(Interest)
+            .filter(Interest.name.in_(["India", "Sports"]))
+            .all()
+        }
+        db.add_all(
+            [
+                UserInterest(user_id=user.id, interest_id=interests["India"].id),
+                UserInterest(user_id=user.id, interest_id=interests["Sports"].id),
+            ]
+        )
+        now = datetime.now(timezone.utc)
+        articles = [
+            _article(
+                title="India cricket archive",
+                country="in",
+                category="sports",
+                published_at=now - timedelta(hours=72),
+            ),
+            _article(
+                title="India economy today",
+                country="in",
+                category="business",
+                published_at=now - timedelta(hours=2),
+            ),
+            _article(
+                title="US basketball today",
+                country="us",
+                category="sports",
+                published_at=now - timedelta(hours=3),
+            ),
+        ]
+        db.add_all(articles)
+        db.flush()
+        for article in articles:
+            db.add(
+                Summary(
+                    article_id=article.id,
+                    display_headline=article.title,
+                    main_takeaway=f"{article.title} summary.",
+                    supporting_lines=[],
+                    summary_text=f"{article.title} summary.",
+                    why_it_matters=None,
+                    model_name="test",
+                )
+            )
+        db.commit()
+
+        ranked = rank_articles_for_user(
+            db,
+            user=user,
+            edition_type=MORNING_BRIEF,
+            market_timezone="America/New_York",
+        )
+
+        assert [item.article.title for item in ranked] == [
+            "India economy today",
+            "US basketball today",
+            "India cricket archive",
+        ]
+    finally:
+        db.close()
+
+
+def test_ingestion_selects_across_categories_before_filling_cap(monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    def raw_article(title: str, category: str, index: int) -> dict:
+        return {
+            "title": title,
+            "source": "Example",
+            "country": "us",
+            "url": f"https://example.com/{category}/{index}",
+            "published_at": now - timedelta(minutes=index),
+            "description": (
+                f"{title} gives readers useful context about {category} news today."
+            ),
+            "content": (
+                f"{title} includes enough article text for validation and ranking."
+            ),
+            "image_url": None,
+        }
+
+    fixtures = {
+        "business": [
+            raw_article(f"Business story {index}", "business", index)
+            for index in range(8)
+        ],
+        "sports": [
+            raw_article(f"Sports story {index}", "sports", index) for index in range(2)
+        ],
+    }
+
+    class FakeNewsApiService:
+        async def fetch_top_headlines(
+            self, *, category, country=None, query=None, page_size=None
+        ):
+            return fixtures[category][:page_size]
+
+    monkeypatch.setattr("app.tasks.news_fetching.NewsApiService", FakeNewsApiService)
+    monkeypatch.setattr("app.tasks.news_fetching.settings.NEWS_API_COUNTRY", "us")
+    monkeypatch.setattr("app.tasks.news_fetching.settings.NEWS_API_COUNTRIES", "us")
+    monkeypatch.setattr(
+        "app.tasks.news_fetching.settings.NEWS_BATCH_CATEGORIES",
+        "business,sports",
+    )
+    monkeypatch.setattr("app.tasks.news_fetching.settings.NEWS_DAILY_ARTICLE_TARGET", 4)
+    monkeypatch.setattr("app.tasks.news_fetching.settings.ARTICLE_POOL_LIMIT", 100)
+
+    db = TestingSessionLocal()
+    try:
+        result = run(_async_ingest_news(db))
+        categories = {
+            category: count
+            for category, count in db.query(
+                Article.primary_category,
+                func.count(Article.id),
+            )
+            .group_by(Article.primary_category)
+            .all()
+        }
+
+        assert result["inserted"] == 4
+        assert result["by_category"]["business"]["inserted"] == 2
+        assert result["by_category"]["sports"]["inserted"] == 2
+        assert categories == {"business": 2, "sports": 2}
+    finally:
+        db.close()
+
+
 def test_rerank_counts_selected_exploration_items_only(monkeypatch):
     monkeypatch.setattr("app.services.recommendations.settings.FEED_EDITION_SIZE", 4)
     monkeypatch.setattr("app.services.recommendations.settings.MAX_FEED_ITEMS", 4)
@@ -374,6 +519,116 @@ def test_admin_article_distribution_counts_country_category_intersections():
     assert intersections[("us", "sports")] == 1
 
 
+def test_login_rejects_invalid_email_format():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/login/access-token",
+        data={"username": "not-an-email", "password": "TestPassword123"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Enter a valid email address"
+
+
+def test_user_can_change_password_and_delete_account():
+    client = TestClient(app)
+    login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "TestPassword123"},
+    )
+    token = login_response.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    wrong_password_response = client.post(
+        "/api/users/me/password",
+        json={"current_password": "wrong", "new_password": "NextPassword123"},
+        headers=headers,
+    )
+    assert wrong_password_response.status_code == 400
+
+    change_response = client.post(
+        "/api/users/me/password",
+        json={
+            "current_password": "TestPassword123",
+            "new_password": "NextPassword123",
+        },
+        headers=headers,
+    )
+    assert change_response.status_code == 204
+
+    old_login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "TestPassword123"},
+    )
+    assert old_login_response.status_code == 401
+
+    new_login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "NextPassword123"},
+    )
+    assert new_login_response.status_code == 200
+    delete_headers = {
+        "Authorization": f"Bearer {new_login_response.json()['access_token']}"
+    }
+
+    delete_response = client.request(
+        "DELETE",
+        "/api/users/me",
+        json={"password": "NextPassword123"},
+        headers=delete_headers,
+    )
+    assert delete_response.status_code == 204
+
+    deleted_login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "NextPassword123"},
+    )
+    assert deleted_login_response.status_code == 401
+
+
+def test_admin_can_reset_and_delete_beta_user():
+    client = TestClient(app)
+    login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "reader@example.com", "password": "TestPassword123"},
+    )
+    admin_headers = {"Authorization": f"Bearer {login_response.json()['access_token']}"}
+
+    create_response = client.post(
+        "/api/admin/users",
+        json={"email": "beta-user@example.com", "password": "StartPassword123"},
+        headers=admin_headers,
+    )
+    assert create_response.status_code == 201
+    user_id = create_response.json()["id"]
+
+    reset_response = client.post(
+        f"/api/admin/users/{user_id}/password",
+        json={"password": "ResetPassword123"},
+        headers=admin_headers,
+    )
+    assert reset_response.status_code == 204
+
+    beta_login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "beta-user@example.com", "password": "ResetPassword123"},
+    )
+    assert beta_login_response.status_code == 200
+
+    delete_response = client.delete(
+        f"/api/admin/users/{user_id}",
+        headers=admin_headers,
+    )
+    assert delete_response.status_code == 204
+
+    deleted_login_response = client.post(
+        "/api/login/access-token",
+        data={"username": "beta-user@example.com", "password": "ResetPassword123"},
+    )
+    assert deleted_login_response.status_code == 401
+
+
 def test_frontend_setup_and_feed_contract():
     client = TestClient(app)
 
@@ -448,6 +703,22 @@ def test_frontend_setup_and_feed_contract():
     saved_response = client.get("/api/users/me/saved-articles", headers=headers)
     assert saved_response.status_code == 200
     assert saved_response.json()[0]["id"] == first_article_id
+
+    support_response = client.post(
+        "/api/users/me/support-messages",
+        json={"message": "The app could not refresh my midday edition."},
+        headers=headers,
+    )
+    assert support_response.status_code == 201
+    assert support_response.json()["status"] == "open"
+
+    inbox_response = client.get("/api/admin/support-messages", headers=headers)
+    assert inbox_response.status_code == 200
+    inbox_messages = inbox_response.json()
+    assert inbox_messages[0]["user_email"] == "reader@example.com"
+    assert inbox_messages[0]["message"] == (
+        "The app could not refresh my midday edition."
+    )
 
     db = TestingSessionLocal()
     try:

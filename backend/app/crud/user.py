@@ -7,14 +7,23 @@ from app.core.security import get_password_hash
 from app.db import model
 
 
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 def get_user_by_email(db: Session, email: str):
-    return db.query(model.User).filter(model.User.email == email).first()
+    return (
+        db.query(model.User).filter(model.User.email == normalize_email(email)).first()
+    )
 
 
 def create_user(db: Session, user):
     hashed_password = get_password_hash(user.password)
 
-    db_user = model.User(email=user.email, hashed_password=hashed_password)
+    db_user = model.User(
+        email=normalize_email(str(user.email)),
+        hashed_password=hashed_password,
+    )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
@@ -23,10 +32,17 @@ def create_user(db: Session, user):
 
 def create_google_user(db: Session, *, email: str):
     db_user = model.User(
-        email=email,
+        email=normalize_email(email),
         hashed_password=get_password_hash(f"google-auth:{email}"),
     )
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return db_user
+
+
+def update_password(db: Session, user: model.User, password: str) -> model.User:
+    user.hashed_password = get_password_hash(password)
+    db.commit()
+    db.refresh(user)
+    return user

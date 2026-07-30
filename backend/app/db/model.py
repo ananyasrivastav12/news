@@ -70,6 +70,9 @@ class User(Base):
     flashcards = relationship(
         "Flashcard", back_populates="user", cascade="all, delete-orphan"
     )
+    support_messages = relationship(
+        "SupportMessage", back_populates="user", cascade="all, delete-orphan"
+    )
     embedding_profile = relationship(
         "UserEmbeddingProfile",
         back_populates="user",
@@ -326,6 +329,20 @@ class SummaryReview(Base):
     article = relationship("Article", back_populates="summary_reviews")
     summary = relationship("Summary", back_populates="reviews")
     reviewer = relationship("User")
+
+
+class SupportMessage(Base):
+    __tablename__ = "support_messages"
+
+    # users can send admin-readable support notes from profile
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    subject = Column(String(120))
+    message = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="open", index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    user = relationship("User", back_populates="support_messages")
 
 
 class PipelineSchedule(Base):

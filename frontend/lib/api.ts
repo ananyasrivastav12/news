@@ -74,6 +74,14 @@ export type ProfileSummary = {
   };
 };
 
+export type SupportMessage = {
+  id: number;
+  subject: string | null;
+  message: string;
+  status: string;
+  created_at: string | null;
+};
+
 export type TokenResponse = {
   access_token: string;
   token_type: string;
@@ -197,6 +205,51 @@ export function fetchSavedArticles(apiBaseUrl: string, accessToken: string) {
 export function fetchProfileSummary(apiBaseUrl: string, accessToken: string) {
   return request<ProfileSummary>(apiBaseUrl, '/api/users/me/profile-summary', {
     headers: { Authorization: `Bearer ${accessToken}` },
+  });
+}
+
+export function createSupportMessage(
+  apiBaseUrl: string,
+  accessToken: string,
+  payload: { subject?: string; message: string }
+) {
+  return request<SupportMessage>(apiBaseUrl, '/api/users/me/support-messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function changePassword(
+  apiBaseUrl: string,
+  accessToken: string,
+  payload: { current_password: string; new_password: string }
+) {
+  return request<void>(apiBaseUrl, '/api/users/me/password', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteMyAccount(
+  apiBaseUrl: string,
+  accessToken: string,
+  payload: { password: string }
+) {
+  return request<void>(apiBaseUrl, '/api/users/me', {
+    method: 'DELETE',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(payload),
   });
 }
 

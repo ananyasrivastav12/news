@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
+from app.core import security
 from app.core.config import settings
 from app.crud import interest as crud_interest
 from app.crud import user as crud_user
@@ -116,3 +117,58 @@ def read_profile_summary(
             explicit_interest_matches=explicit_matches,
         ),
     )
+
+
+@router.post(
+    "/users/me/support-messages",
+    response_model=user_schema.SupportMessageOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_support_message(
+    payload: user_schema.SupportMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: db_model.User = Depends(get_current_user),
+):
+    message_text = payload.message.strip()
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    subject = payload.subject.strip() if payload.subject else None
+    support_message = db_model.SupportMessage(
+        user_id=current_user.id,
+        subject=subject or None,
+        message=message_text,
+    )
+    db.add(support_message)
+    db.commit()
+    db.refresh(support_message)
+    return support_message
+
+
+@router.post("/users/me/password", status_code=status.HTTP_204_NO_CONTENT)
+def change_my_password(
+    payload: user_schema.PasswordChange,
+    db: Session = Depends(get_db),
+    current_user: db_model.User = Depends(get_current_user),
+):
+    if not security.verify_password(
+        payload.current_password, current_user.hashed_password
+    ):
+        raise HTTPException(status_code=400, detail="Current password is incorrect.")
+    crud_user.update_password(db, current_user, payload.new_password)
+
+
+@router.delete("/users/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_account(
+    payload: user_schema.AccountDelete,
+    db: Session = Depends(get_db),
+    current_user: db_model.User = Depends(get_current_user),
+):
+    if not security.verify_password(payload.password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Password is incorrect.")
+    (
+        db.query(db_model.SummaryReview)
+        .filter(db_model.SummaryReview.reviewer_user_id == current_user.id)
+        .update({"reviewer_user_id": None}, synchronize_session=False)
+    )
+    db.delete(current_user)
+    db.commit()

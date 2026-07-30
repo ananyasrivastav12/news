@@ -447,7 +447,8 @@ select {
 
 .quality-page,
 .articles-page,
-.users-page {
+.users-page,
+.support-page {
   width: min(100%, 1500px);
   margin: 0 auto;
 }
@@ -455,20 +456,30 @@ select {
 .home-page .page-title,
 .quality-page .page-title,
 .articles-page .page-title,
-.users-page .page-title {
+.users-page .page-title,
+.support-page .page-title {
   display: block;
   text-align: center;
 }
 
 .quality-page .chart-panel,
 .articles-page .chart-panel,
-.users-page .chart-panel {
+.users-page .chart-panel,
+.support-page .chart-panel {
   border-color: var(--color-border-soft);
   box-shadow: 0 1px 0 rgba(32, 27, 22, 0.04);
 }
 
 .quality-filter-bar {
   justify-content: center;
+  margin-bottom: 16px;
+}
+
+.support-toolbar {
+  justify-content: center;
+}
+
+.support-summary {
   margin-bottom: 16px;
 }
 
@@ -741,6 +752,11 @@ select {
   color: var(--color-muted);
 }
 
+.danger-action {
+  border-color: #d8b0a8;
+  color: var(--color-danger);
+}
+
 .table-footer-action {
   justify-self: center;
   min-height: 32px;
@@ -949,6 +965,33 @@ tr:hover td {
 .title-cell {
   min-width: 240px;
   line-height: 1.35;
+}
+
+.user-action-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 280px;
+}
+
+.user-action-cell input {
+  width: 180px;
+  min-height: 28px;
+}
+
+.support-message-cell {
+  display: grid;
+  min-width: 360px;
+  gap: 4px;
+  white-space: pre-wrap;
+}
+
+.support-message-cell strong {
+  color: var(--color-primary-strong);
+}
+
+.support-message-cell span {
+  line-height: 1.4;
 }
 
 .badge {

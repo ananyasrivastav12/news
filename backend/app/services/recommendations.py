@@ -349,8 +349,10 @@ def rank_articles_for_user(
         pref.keyword: pref.score for pref in user.keyword_preferences if pref.score < 0
     }
 
-    fresh_cutoff = datetime.now(timezone.utc) - timedelta(
-        hours=settings.ARTICLE_MAX_AGE_HOURS
+    now = datetime.now(timezone.utc)
+    pool_cutoff = now - timedelta(hours=settings.ARTICLE_MAX_AGE_HOURS)
+    primary_fresh_cutoff = now - timedelta(
+        hours=min(settings.ARTICLE_MAX_AGE_HOURS, settings.FEED_PRIMARY_MAX_AGE_HOURS)
     )
     recent_interactions = (
         db.query(db_model.UserArticleInteraction)
@@ -394,7 +396,7 @@ def rank_articles_for_user(
         .filter(
             and_(
                 db_model.Article.summary_status == db_model.SummaryStatus.COMPLETED,
-                db_model.Article.published_at >= fresh_cutoff,
+                db_model.Article.published_at >= pool_cutoff,
             )
         )
         .order_by(desc(db_model.Article.published_at))
@@ -402,8 +404,8 @@ def rank_articles_for_user(
         .all()
     )
 
-    ranked: list[RankedArticle] = []
-    now = datetime.now(timezone.utc)
+    primary_ranked: list[RankedArticle] = []
+    backfill_ranked: list[RankedArticle] = []
     for article in candidates:
         if article.summary is None:
             continue
@@ -440,10 +442,13 @@ def rank_articles_for_user(
             raw_negative_penalty,
             1.0 if category_match else 2.0,
         )
-        if article.published_at:
-            recency_hours = (
-                now - article.published_at.astimezone(timezone.utc)
-            ).total_seconds() / 3600
+        published_at = (
+            article.published_at.astimezone(timezone.utc)
+            if article.published_at
+            else None
+        )
+        if published_at:
+            recency_hours = (now - published_at).total_seconds() / 3600
         else:
             recency_hours = settings.ARTICLE_MAX_AGE_HOURS
         recency_score = max(
@@ -489,25 +494,41 @@ def rank_articles_for_user(
             lane,
             has_behavioral_signal=keyword_score > 0 or embedding_similarity_score > 0,
         )
-        ranked.append(
-            RankedArticle(
-                article=article,
-                score=round(score, 4),
-                reason=reason,
-                has_interaction=has_interaction,
-                lane=lane,
-            )
+        ranked_item = RankedArticle(
+            article=article,
+            score=round(score, 4),
+            reason=reason,
+            has_interaction=has_interaction,
+            lane=lane,
         )
+        # old articles can backfill, but fresh cards should own the visible edition
+        if published_at is not None and published_at >= primary_fresh_cutoff:
+            primary_ranked.append(ranked_item)
+        else:
+            backfill_ranked.append(ranked_item)
 
-    ranked.sort(key=lambda item: (item.has_interaction, -item.score))
-    return rerank_with_constraints(
-        ranked,
+    primary_ranked.sort(key=lambda item: (item.has_interaction, -item.score))
+    backfill_ranked.sort(key=lambda item: (item.has_interaction, -item.score))
+    primary_feed = rerank_with_constraints(
+        primary_ranked,
         explicit_interests=explicit_interests,
         explicit_categories=explicit_categories,
         explicit_country_codes=explicit_country_codes,
         selected_country_codes=selected_country_codes,
         edition_type=edition_type,
     )
+    backfill_feed = rerank_with_constraints(
+        backfill_ranked,
+        explicit_interests=explicit_interests,
+        explicit_categories=explicit_categories,
+        explicit_country_codes=explicit_country_codes,
+        selected_country_codes=selected_country_codes,
+        edition_type=edition_type,
+    )
+    return [
+        *primary_feed,
+        *backfill_feed[: max(0, settings.MAX_FEED_ITEMS - len(primary_feed))],
+    ]
 
 
 def rerank_with_constraints(

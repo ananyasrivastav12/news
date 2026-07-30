@@ -18,6 +18,10 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'Something went wrong.';
 }
 
+function isValidEmail(value: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/i.test(value);
+}
+
 export default function LoginScreen() {
   const router = useRouter();
   const { apiBaseUrl, setAccessToken, userEmail, setUserEmail } = useAppSession();
@@ -29,13 +33,17 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
 
   async function handleContinue() {
-    const email = userEmail.trim();
+    const email = userEmail.trim().toLowerCase();
     setEmailError('');
     setPasswordError('');
     setFormError('');
 
     if (!email) {
       setEmailError('Enter the email from your invitation.');
+      return;
+    }
+    if (!isValidEmail(email)) {
+      setEmailError('Enter a valid email address.');
       return;
     }
     if (!password) {

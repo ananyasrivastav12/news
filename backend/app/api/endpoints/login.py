@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
+from pydantic import EmailStr, TypeAdapter, ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
@@ -14,13 +15,25 @@ from app.crud import user as crud_user
 from app.schemas import token as token_schema
 
 router = APIRouter()
+email_adapter = TypeAdapter(EmailStr)
+
+
+def _validated_login_email(value: str) -> str:
+    try:
+        return str(email_adapter.validate_python(value)).lower()
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Enter a valid email address",
+        ) from exc
 
 
 @router.post("/login/access-token", response_model=token_schema.Token)
 def login_for_access_token(
     db: Session = Depends(get_db), form_data: OAuth2PasswordRequestForm = Depends()
 ):
-    user = crud_user.get_user_by_email(db, email=form_data.username)
+    email = _validated_login_email(form_data.username)
+    user = crud_user.get_user_by_email(db, email=email)
     if not user or not security.verify_password(
         form_data.password, user.hashed_password
     ):

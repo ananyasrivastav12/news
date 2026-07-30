@@ -169,6 +169,16 @@ type AdminUserCreated = {
   interests: string[];
 };
 
+type SupportMessage = {
+  id: number;
+  user_id: number;
+  user_email: string;
+  subject: string | null;
+  message: string;
+  status: string;
+  created_at: string | null;
+};
+
 type Schedule = {
   id: number;
   name: string;
@@ -185,10 +195,17 @@ type Schedule = {
   next_run_at: string | null;
 };
 
-type Tab = "home" | "control" | "quality" | "articles" | "users";
+type Tab = "home" | "control" | "quality" | "articles" | "users" | "support";
 type DateScope = "fresh" | "today" | "fetched_today" | "all" | "custom";
 type Tone = "neutral" | "good" | "warn" | "bad";
-type IconName = "home" | "control" | "quality" | "articles" | "users" | "signout";
+type IconName =
+  | "home"
+  | "control"
+  | "quality"
+  | "articles"
+  | "users"
+  | "support"
+  | "signout";
 
 const NAV_ITEMS: { id: Tab; label: string; icon: IconName }[] = [
   {
@@ -215,6 +232,11 @@ const NAV_ITEMS: { id: Tab; label: string; icon: IconName }[] = [
     id: "users",
     label: "Users",
     icon: "users",
+  },
+  {
+    id: "support",
+    label: "Support",
+    icon: "support",
   },
 ];
 
@@ -354,6 +376,7 @@ function App() {
         {tab === "quality" ? <QualityPage api={api} /> : null}
         {tab === "articles" ? <ArticlesPage api={api} /> : null}
         {tab === "users" ? <UsersPage api={api} /> : null}
+        {tab === "support" ? <SupportPage api={api} /> : null}
       </main>
     </div>
   );
@@ -1549,6 +1572,10 @@ function UsersPage({ api }: { api: Api }) {
   const [isRebuildingFeed, setIsRebuildingFeed] = useState(false);
   const [rebuildEditionType, setRebuildEditionType] = useState("morning_brief");
   const [rebuildTimezone, setRebuildTimezone] = useState("America/New_York");
+  const [resetUserId, setResetUserId] = useState<number | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState("");
+  const [busyUserAction, setBusyUserAction] = useState<string | null>(null);
+  const [userActionStatus, setUserActionStatus] = useState("");
   const selectedUser = users.find((user) => user.id === selectedUserId) ?? null;
   const selectedFeed = useMemo(
     () =>
@@ -1610,10 +1637,57 @@ function UsersPage({ api }: { api: Api }) {
     }
   }
 
+  async function resetUserPassword(
+    event: React.MouseEvent,
+    user: AdminUser,
+  ) {
+    event.stopPropagation();
+    setUserActionStatus("");
+    if (resetUserId !== user.id) {
+      setResetUserId(user.id);
+      setResetPasswordValue("");
+      return;
+    }
+    if (resetPasswordValue.length < 8) {
+      setUserActionStatus("Temporary password must be at least 8 characters.");
+      return;
+    }
+    setBusyUserAction(`reset-${user.id}`);
+    try {
+      await api.post(`/api/admin/users/${user.id}/password`, {
+        password: resetPasswordValue,
+      });
+      setUserActionStatus(`Password reset for ${user.email}.`);
+      setResetUserId(null);
+      setResetPasswordValue("");
+    } finally {
+      setBusyUserAction(null);
+    }
+  }
+
+  async function deleteUser(event: React.MouseEvent, user: AdminUser) {
+    event.stopPropagation();
+    if (!window.confirm(`Delete ${user.email}? This cannot be undone.`)) return;
+    setBusyUserAction(`delete-${user.id}`);
+    setUserActionStatus("");
+    try {
+      await api.delete(`/api/admin/users/${user.id}`);
+      if (selectedUserId === user.id) {
+        setSelectedUserId(null);
+        setFeed([]);
+      }
+      setUserActionStatus(`Deleted ${user.email}.`);
+      await refreshUsers();
+    } finally {
+      setBusyUserAction(null);
+    }
+  }
+
   return (
     <section className="users-page">
       <PageTitle title="Users" />
       {loading ? <InlineState message="Loading users..." /> : null}
+      {userActionStatus ? <InlineState message={userActionStatus} tone="success" /> : null}
       <div className="user-workspace">
         <div className="user-summary-grid">
           <MetricTile label="Beta users" value={users.length} />
@@ -1629,6 +1703,7 @@ function UsersPage({ api }: { api: Api }) {
                 <th>Interests</th>
                 <th>Views/Likes/Saves</th>
                 <th>Last active</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1642,6 +1717,35 @@ function UsersPage({ api }: { api: Api }) {
                   <td>{user.interests.join(", ") || "Not selected yet"}</td>
                   <td>{user.viewed_count}/{user.liked_count}/{user.saved_count}</td>
                   <td>{formatDate(user.last_active)}</td>
+                  <td
+                    className="user-action-cell"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    {resetUserId === user.id ? (
+                      <input
+                        type="password"
+                        value={resetPasswordValue}
+                        onChange={(event) => setResetPasswordValue(event.target.value)}
+                        placeholder="Temporary password"
+                      />
+                    ) : null}
+                    <ActionButton
+                      busy={busyUserAction === `reset-${user.id}`}
+                      busyLabel="Resetting..."
+                      className="table-action"
+                      onClick={(event) => resetUserPassword(event, user)}
+                    >
+                      {resetUserId === user.id ? "Save password" : "Reset password"}
+                    </ActionButton>
+                    <ActionButton
+                      busy={busyUserAction === `delete-${user.id}`}
+                      busyLabel="Deleting..."
+                      className="table-action danger-action"
+                      onClick={(event) => deleteUser(event, user)}
+                    >
+                      Delete
+                    </ActionButton>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -1804,6 +1908,100 @@ function UsersPage({ api }: { api: Api }) {
           </div>
         </ChartPanel>
       </div>
+    </section>
+  );
+}
+
+function SupportPage({ api }: { api: Api }) {
+  const [messages, setMessages] = useState<SupportMessage[]>([]);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  async function refresh() {
+    const params = new URLSearchParams();
+    if (statusFilter) params.set("status", statusFilter);
+    setLoading(true);
+    setIsRefreshing(true);
+    try {
+      const suffix = params.toString() ? `?${params}` : "";
+      setMessages(await api.get<SupportMessage[]>(`/api/admin/support-messages${suffix}`));
+    } catch {
+      setMessages([]);
+    } finally {
+      setLoading(false);
+      setIsRefreshing(false);
+    }
+  }
+
+  useEffect(() => {
+    void refresh();
+  }, [api]);
+
+  const openCount = messages.filter((message) => message.status === "open").length;
+  const latestMessage = messages[0] ?? null;
+
+  return (
+    <section className="support-page">
+      <PageTitle title="Support" />
+      <div className="toolbar support-toolbar">
+        <select
+          value={statusFilter}
+          onChange={(event) => setStatusFilter(event.target.value)}
+        >
+          <option value="">All messages</option>
+          <option value="open">Open</option>
+        </select>
+        <ActionButton busy={isRefreshing} busyLabel="Refreshing..." onClick={refresh}>
+          Refresh
+        </ActionButton>
+      </div>
+      <div className="metric-grid support-summary">
+        <MetricTile label="Messages" value={messages.length} />
+        <MetricTile
+          label="Open"
+          value={openCount}
+          tone={openCount > 0 ? "warn" : "good"}
+        />
+        <MetricTile
+          label="Latest"
+          valueText={formatDateShort(latestMessage?.created_at ?? null)}
+          className="date-metric"
+        />
+      </div>
+      {loading ? <InlineState message="Loading support messages..." /> : null}
+      <ChartPanel title="Inbox">
+        <CompactTable className="support-table" minWidth={920}>
+          <thead>
+            <tr>
+              <th>Received</th>
+              <th>User</th>
+              <th>Status</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody>
+            {!loading && messages.length === 0 ? (
+              <tr>
+                <td colSpan={4} className="empty-table-cell">
+                  No support messages yet.
+                </td>
+              </tr>
+            ) : null}
+            {messages.map((message) => (
+              <tr key={message.id}>
+                <td>{formatDate(message.created_at)}</td>
+                <td>{message.user_email}</td>
+                <td><Badge value={message.status} /></td>
+                <td className="support-message-cell">
+                  {message.subject ? <strong>{message.subject}</strong> : null}
+                  <span>{message.message}</span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </CompactTable>
+      </ChartPanel>
     </section>
   );
 }
@@ -1991,7 +2189,7 @@ function ActionButton({
   className?: string;
   disabled?: boolean;
   type?: "button" | "submit";
-  onClick?: () => void;
+  onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <button
@@ -2161,6 +2359,13 @@ function IconSymbol({ name }: { name: IconName }) {
         <path d="M3.5 19c.8-3.2 2.7-5 5.5-5s4.7 1.8 5.5 5" />
         <path d="M15 11.5a3 3 0 1 0 0-5.9" />
         <path d="M17 14c1.9.5 3.1 2.2 3.5 5" />
+      </>
+    ),
+    support: (
+      <>
+        <path d="M5 6.5h14v9H9l-4 3z" />
+        <path d="M8.5 10h7" />
+        <path d="M8.5 13h4.5" />
       </>
     ),
     signout: (
@@ -2631,6 +2836,10 @@ function createApi(token: string, setError: (value: string) => void) {
       request<T>(path, {
         method: "POST",
         body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+    delete: <T,>(path: string) =>
+      request<T>(path, {
+        method: "DELETE",
       }),
   };
 }

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from math import ceil
 from typing import Any
@@ -16,6 +17,7 @@ from app.db import model as db_model
 from app.db.session import SessionLocal
 from app.services.admin_observability import build_article_distribution
 from app.services.article_pipeline import (
+    NormalizedArticle,
     is_duplicate_article,
     is_valid_article,
     normalize_article,
@@ -60,11 +62,20 @@ def _country_query_term(country: str) -> str:
     return country
 
 
+@dataclass
+class IngestionCandidate:
+    # candidate rows wait here until quotas pick the best mix
+    article: NormalizedArticle
+    country: str
+    requested_category: str
+
+
 async def _fetch_country_category_articles(
     service: NewsApiService,
     *,
     country: str,
     category: str,
+    page_size: int | None = None,
 ) -> tuple[list[dict], str]:
     # non-default countries fall back through source lookup, then search query
     default_country = settings.NEWS_API_COUNTRY.lower()
@@ -72,12 +83,14 @@ async def _fetch_country_category_articles(
         articles = await service.fetch_top_headlines(
             category=category,
             country=country,
+            page_size=page_size,
         )
         return articles, "top-headlines-country"
 
     articles = await service.fetch_top_headlines_for_country_sources(
         category=category,
         country=country,
+        page_size=page_size,
     )
     if articles:
         return articles, "top-headlines-sources"
@@ -88,8 +101,68 @@ async def _fetch_country_category_articles(
     articles = await service.fetch_everything(
         query=query,
         country=country,
+        page_size=page_size,
     )
     return articles, "everything-query"
+
+
+def _ingestion_page_size(
+    *, target: int, countries: list[str], categories: list[str]
+) -> int:
+    # ask for extra candidates, but not 100 per bucket by default
+    planned_requests = max(1, len(countries) * len(categories))
+    per_bucket_target = max(1, ceil(target / planned_requests))
+    return min(settings.NEWS_API_PAGE_SIZE, max(20, per_bucket_target * 3))
+
+
+def _published_sort_key(candidate: IngestionCandidate) -> datetime:
+    published_at = candidate.article.published_at
+    if published_at is None:
+        return datetime.min.replace(tzinfo=timezone.utc)
+    if published_at.tzinfo is None:
+        return published_at.replace(tzinfo=timezone.utc)
+    return published_at.astimezone(timezone.utc)
+
+
+def _select_country_candidates(
+    candidates: list[IngestionCandidate],
+    *,
+    limit: int,
+    categories: list[str],
+) -> list[IngestionCandidate]:
+    # each category gets a first pass before recency fills the rest
+    selected: list[IngestionCandidate] = []
+    selected_ids: set[int] = set()
+    per_category_target = max(1, ceil(limit / max(1, len(categories))))
+    by_category = {
+        category: sorted(
+            [
+                candidate
+                for candidate in candidates
+                if candidate.requested_category == category
+            ],
+            key=_published_sort_key,
+            reverse=True,
+        )
+        for category in categories
+    }
+
+    for category in categories:
+        for candidate in by_category[category][:per_category_target]:
+            if len(selected) >= limit:
+                return selected
+            selected.append(candidate)
+            selected_ids.add(id(candidate))
+
+    remaining = sorted(candidates, key=_published_sort_key, reverse=True)
+    for candidate in remaining:
+        if len(selected) >= limit:
+            break
+        if id(candidate) in selected_ids:
+            continue
+        selected.append(candidate)
+        selected_ids.add(id(candidate))
+    return selected
 
 
 async def _async_ingest_news(db: Session) -> dict[str, Any]:
@@ -99,8 +172,15 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
     countries = _get_batch_countries()
     fetched = 0
     inserted = 0
+    invalid_skipped = 0
+    duplicate_skipped = 0
     target = max(1, settings.NEWS_DAILY_ARTICLE_TARGET)
     per_country_target = max(1, ceil(target / max(1, len(countries))))
+    page_size = _ingestion_page_size(
+        target=target,
+        countries=countries,
+        categories=categories,
+    )
     by_country: dict[str, dict[str, int]] = {
         country: {"fetched": 0, "inserted": 0} for country in countries
     }
@@ -112,14 +192,19 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
         for country in countries
     }
     by_strategy: dict[str, int] = {}
+    candidates_by_country: dict[str, list[IngestionCandidate]] = {
+        country: [] for country in countries
+    }
+    seen_urls: set[str] = set()
+    seen_story_keys: set[str] = set()
 
     for country in countries:
-        country_inserted = 0
         for category in categories:
             articles, strategy = await _fetch_country_category_articles(
                 service,
                 country=country,
                 category=category,
+                page_size=page_size,
             )
             by_strategy[strategy] = by_strategy.get(strategy, 0) + 1
             fetched += len(articles)
@@ -127,29 +212,61 @@ async def _async_ingest_news(db: Session) -> dict[str, Any]:
             by_category[category]["fetched"] += len(articles)
             by_country_category[country][category]["fetched"] += len(articles)
             for raw_article in articles:
-                if country_inserted >= per_country_target:
-                    break
                 if not is_valid_article(raw_article):
+                    invalid_skipped += 1
                     continue
                 normalized = normalize_article(raw_article, category)
-                if is_duplicate_article(db, normalized):
+                if (
+                    normalized.original_url in seen_urls
+                    or normalized.story_key in seen_story_keys
+                    or is_duplicate_article(db, normalized)
+                ):
+                    duplicate_skipped += 1
                     continue
-                upsert_article(db, normalized)
-                inserted += 1
-                country_inserted += 1
-                by_country[country]["inserted"] += 1
-                by_category[category]["inserted"] += 1
-                by_country_category[country][category]["inserted"] += 1
-            db.commit()
-            if country_inserted >= per_country_target:
-                break
+                seen_urls.add(normalized.original_url)
+                seen_story_keys.add(normalized.story_key)
+                candidates_by_country[country].append(
+                    IngestionCandidate(
+                        article=normalized,
+                        country=country,
+                        requested_category=category,
+                    )
+                )
+
+    selected_candidates: list[IngestionCandidate] = []
+    for country in countries:
+        selected_candidates.extend(
+            _select_country_candidates(
+                candidates_by_country[country],
+                limit=per_country_target,
+                categories=categories,
+            )
+        )
+
+    for candidate in selected_candidates[:target]:
+        normalized = candidate.article
+        if is_duplicate_article(db, normalized):
+            duplicate_skipped += 1
+            continue
+        upsert_article(db, normalized)
+        inserted += 1
+        by_country[candidate.country]["inserted"] += 1
+        by_category[candidate.requested_category]["inserted"] += 1
+        by_country_category[candidate.country][candidate.requested_category][
+            "inserted"
+        ] += 1
+    db.commit()
 
     pruned = _prune_article_pool(db)
     return {
         "fetched": fetched,
         "inserted": inserted,
+        "invalid_skipped": invalid_skipped,
+        "duplicate_skipped": duplicate_skipped,
         "target": target,
         "per_country_target": per_country_target,
+        "page_size": page_size,
+        "candidates": sum(len(items) for items in candidates_by_country.values()),
         "pruned": pruned,
         "countries": len(countries),
         "by_country": by_country,
@@ -385,6 +502,10 @@ def _finish_recorded_run(
     if ingestion is not None:
         pipeline_run.fetched_count += int(ingestion.get("fetched", 0))
         pipeline_run.inserted_count += int(ingestion.get("inserted", 0))
+        pipeline_run.duplicates_skipped_count += int(
+            ingestion.get("duplicate_skipped", 0)
+        )
+        pipeline_run.invalid_skipped_count += int(ingestion.get("invalid_skipped", 0))
         metadata["ingestion"] = ingestion
     if summarization is not None:
         pipeline_run.summarized_count += int(summarization.get("processed", 0))

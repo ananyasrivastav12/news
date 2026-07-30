@@ -16,6 +16,10 @@ class AdminUserCreated(BaseModel):
     interests: list[str]
 
 
+class AdminUserPasswordUpdate(BaseModel):
+    password: str = Field(min_length=8, max_length=1024)
+
+
 class AdminFeedGenerationRequest(BaseModel):
     edition_type: str = "all"
     market_timezone: str = "America/New_York"
@@ -227,6 +231,16 @@ class SummaryReviewOut(BaseModel):
     created_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class SupportMessageOut(BaseModel):
+    id: int
+    user_id: int
+    user_email: str
+    subject: str | None = None
+    message: str
+    status: str
+    created_at: datetime | None = None
 
 
 class PipelineScheduleBase(BaseModel):
