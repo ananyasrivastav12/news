@@ -1,6 +1,6 @@
 # Personalized News Recommendation Platform
 
-**FastAPI, PostgreSQL, Celery, Redis, React Native, Vector Search**
+**FastAPI, PostgreSQL, Celery, Redis, React Native, Embedding Similarity**
 
 **The Edit** is a full-stack personalized news platform built with **FastAPI,
 PostgreSQL, Celery, Redis, React Native, and embedding-based vector similarity**.
@@ -217,7 +217,7 @@ Backend:
 
 ```bash
 cd backend
-env PYTHONPATH=. ./.venv/bin/pytest
+PYTHONPATH=. python -m pytest
 ```
 
 Frontend:
